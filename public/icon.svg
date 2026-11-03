@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0d1a2e"/>
+      <stop offset="1" stop-color="#04070d"/>
+    </linearGradient>
+    <linearGradient id="ring" x1="0.15" y1="0.1" x2="0.85" y2="0.95">
+      <stop offset="0" stop-color="#a6dcff"/>
+      <stop offset="0.55" stop-color="#3d8bff"/>
+      <stop offset="1" stop-color="#1b4fd6"/>
+    </linearGradient>
+    <radialGradient id="iris" cx="0.42" cy="0.38" r="0.7">
+      <stop offset="0" stop-color="#7cc8ff"/>
+      <stop offset="0.6" stop-color="#2f74f0"/>
+      <stop offset="1" stop-color="#173c9e"/>
+    </radialGradient>
+    <linearGradient id="beam" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="0.3" stop-color="#ffffff" stop-opacity="0.95"/>
+      <stop offset="0.7" stop-color="#ffffff" stop-opacity="0.95"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="10"/>
+    </filter>
+  </defs>
+  <rect width="512" height="512" rx="116" fill="url(#bg)"/>
+  <rect x="1.5" y="1.5" width="509" height="509" rx="114.5" fill="none" stroke="#ffffff" stroke-opacity="0.08" stroke-width="3"/>
+  <circle cx="256" cy="256" r="150" fill="none" stroke="url(#ring)" stroke-width="16"/>
+  <circle cx="256" cy="256" r="82" fill="url(#iris)"/>
+  <circle cx="256" cy="256" r="32" fill="#04070d"/>
+  <polygon points="300,70 322,70 234,442 212,442" fill="#9fd6ff" opacity="0.55" filter="url(#glow)"/>
+  <polygon points="303,70 317,70 229,442 215,442" fill="url(#beam)"/>
+  <circle cx="232" cy="230" r="9" fill="#ffffff" opacity="0.9"/>
+</svg>
