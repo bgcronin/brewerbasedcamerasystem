@@ -2549,3 +2549,159 @@
     grid-template-columns: minmax(0, 1fr) 260px;
   }
 }
+
+/* ───────── Canon direct: camera panel, presets, readout ───────── */
+
+.tech {
+  position: relative;
+}
+.tech-preset {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent-hi);
+  box-shadow: 0 0 0 2px var(--surface-2);
+}
+.tech.is-on .tech-preset {
+  box-shadow: 0 0 6px var(--accent);
+}
+.cam-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.cam-mode {
+  padding: 0 6px;
+  border-radius: 5px;
+  background: var(--accent-soft);
+  color: var(--accent-hi);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+:root[data-theme='light'] .cam-mode {
+  color: var(--accent);
+}
+.cam-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+.cam-field {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  height: 50px;
+  padding: 0 10px;
+  border-radius: 11px;
+  background: var(--surface-2);
+  box-shadow: inset 0 0 0 1px var(--hairline);
+  transition: background var(--t-fast) ease, box-shadow var(--t-fast) ease;
+  cursor: pointer;
+}
+.cam-field:hover:not(.is-locked) {
+  background: var(--surface-3);
+}
+.cam-field:focus-within {
+  box-shadow: inset 0 0 0 1px var(--accent-line), 0 0 0 3px var(--accent-softer);
+}
+.cam-field.is-locked {
+  opacity: 0.55;
+  cursor: default;
+}
+.cam-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.cam-select {
+  appearance: none;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 640;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+  padding: 0;
+  width: 100%;
+  cursor: inherit;
+}
+.cam-select option {
+  background: var(--surface-2);
+  color: var(--text);
+  font-family: var(--font);
+}
+.cam-select:disabled {
+  color: var(--text-2);
+  opacity: 1;
+}
+.cam-note {
+  font-size: 12px;
+  color: var(--text-2);
+  line-height: 1.45;
+  padding: 0 2px;
+}
+.cam-preset {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 32px;
+  border-radius: 10px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--accent-hi);
+  background: var(--accent-softer);
+  box-shadow: inset 0 0 0 1px var(--accent-line);
+  transition: background var(--t-fast) ease;
+}
+:root[data-theme='light'] .cam-preset {
+  color: var(--accent);
+}
+button.cam-preset:hover {
+  background: var(--accent-soft);
+}
+.cam-preset.is-saved {
+  color: var(--text-2);
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--hairline-2);
+  font-weight: 560;
+}
+.exposure-readout {
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 620;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+  color: #eef3fb;
+}
+.exposure-mode {
+  color: #8ec0ff;
+  font-weight: 750;
+}
+.source-badge {
+  font-size: 11px;
+  font-weight: 650;
+  padding: 2px 8px;
+  border-radius: 999px;
+  color: var(--accent-hi);
+  background: var(--accent-soft);
+}
+:root[data-theme='light'] .source-badge {
+  color: var(--accent);
+}
+.stage-empty-quiet {
+  background: none;
+}

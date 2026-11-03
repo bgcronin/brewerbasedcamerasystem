@@ -158,9 +158,15 @@ export function Lightbox() {
                   {formatLabel(c.mime as ImageFormat) ?? c.mime} · {formatBytes(c.bytes)}
                 </dd>
               </div>
+              {c.exposure && (
+                <div>
+                  <dt>Exposure</dt>
+                  <dd>{[c.exposure.mode, c.exposure.tv, c.exposure.av, c.exposure.iso && `ISO ${c.exposure.iso}`, c.exposure.wb].filter(Boolean).join(' · ')}</dd>
+                </div>
+              )}
               <div>
                 <dt>Source</dt>
-                <dd>{c.source === 'tether' ? 'Canon EOS (tethered)' : c.source === 'file' ? 'Imported file' : c.deviceLabel || 'Live camera'}</dd>
+                <dd>{c.source === 'tether' ? 'Canon EOS (tethered)' : c.source === 'file' ? 'Imported file' : c.source === 'canon' ? `${c.deviceLabel ?? 'Canon EOS'} · direct` : c.deviceLabel || 'Live camera'}</dd>
               </div>
               <div>
                 <dt>Archive</dt>

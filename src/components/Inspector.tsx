@@ -1,10 +1,22 @@
 import { useMemo } from 'react';
 import { ageFromDOB, formatShortDate, todayISO } from '../lib/dates';
 import { displayName } from '../lib/names';
-import { TECHNIQUES, type Eye } from '../lib/types';
+import { TECHNIQUES, techniqueLabel, type Eye } from '../lib/types';
 import { shutter } from '../state/actions';
 import { useCamera } from '../state/camera';
-import { openSheet, setEye, setTechnique, setView, useApp } from '../state/store';
+import {
+  EXPOSURE_KEYS,
+  EXPOSURE_LABELS,
+  chooseTechnique,
+  currentValues,
+  describeValues,
+  sameValues,
+  savePreset,
+  setCanonProp,
+  useCanon,
+  type ExposureKey,
+} from '../state/canon';
+import { openSheet, setEye, setView, useApp } from '../state/store';
 import { Icon } from './Icon';
 import { Avatar, Button, Kbd, cx } from './ui';
 
@@ -120,6 +132,7 @@ function EyePicker() {
 
 function TechniqueGrid() {
   const technique = useApp((s) => s.technique);
+  const presets = useApp((s) => (s.settings.source === 'canon' ? s.settings.cameraPresets : null));
   return (
     <div className="tech-grid">
       {TECHNIQUES.map((t, i) => (
@@ -128,15 +141,86 @@ function TechniqueGrid() {
           type="button"
           className={cx('tech', technique === t.id && 'is-on')}
           aria-pressed={technique === t.id}
-          onClick={() => setTechnique(technique === t.id ? null : t.id)}
-          title={`${t.label} (${i + 1})`}
+          onClick={() => chooseTechnique(technique === t.id ? null : t.id)}
+          title={`${t.label} (${i + 1})${presets?.[t.id] ? ` · camera preset: ${describeValues(presets[t.id])}` : ''}`}
         >
           <span className={cx('tech-swatch', `tech-${t.id}`)} aria-hidden="true" />
           <span className="tech-label">{t.short}</span>
+          {presets?.[t.id] && <span className="tech-preset" aria-label="has camera preset" />}
           <span className="tech-key">{i + 1}</span>
         </button>
       ))}
     </div>
+  );
+}
+
+function CameraPanel() {
+  const props = useCanon((s) => s.props);
+  const camera = useCanon((s) => s.camera);
+  const link = useCanon((s) => s.link);
+  const busy = useCanon((s) => s.pendingSets > 0);
+  const technique = useApp((s) => s.technique);
+  const presets = useApp((s) => s.settings.cameraPresets);
+  if (link !== 'online' || camera?.state !== 'connected') return null;
+
+  const mode = props.mode?.value;
+  const values = currentValues();
+  const preset = technique ? presets[technique] : undefined;
+  const matches = sameValues(preset, values);
+  const battery = props.battery?.value;
+  const locked = EXPOSURE_KEYS.filter((k) => props[k] && !props[k]!.writable);
+
+  return (
+    <section className="insp-section">
+      <h3 className="insp-title">
+        Camera
+        <span className="insp-keys cam-status">
+          {mode && <span className="cam-mode">{mode}</span>}
+          {battery != null && <span>{battery === 'AC' ? 'Mains' : `${battery}%`}</span>}
+          {busy && <span className="spinner spinner-sm" />}
+        </span>
+      </h3>
+      <div className="cam-grid">
+        {EXPOSURE_KEYS.map((k: ExposureKey) => {
+          const p = props[k];
+          return (
+            <label key={k} className={cx('cam-field', !p?.writable && 'is-locked')}>
+              <span className="cam-label">{EXPOSURE_LABELS[k]}</span>
+              <select
+                className="cam-select"
+                value={p?.value ?? ''}
+                disabled={!p?.writable || !p.options?.length}
+                onChange={(e) => void setCanonProp(k, e.target.value)}
+                aria-label={EXPOSURE_LABELS[k]}
+              >
+                {p?.value && !p.options?.includes(p.value) && <option value={p.value}>{p.value}</option>}
+                {(p?.options ?? []).map((o) => (
+                  <option key={o} value={o}>
+                    {o}
+                  </option>
+                ))}
+              </select>
+            </label>
+          );
+        })}
+      </div>
+      {locked.some((k) => k === 'tv' || k === 'av') && mode && mode !== 'M' && (
+        <p className="cam-note">The dial is on {mode}. Turn it to M to set shutter speed and aperture here.</p>
+      )}
+      {technique ? (
+        matches ? (
+          <div className="cam-preset is-saved">
+            <span>✓ {techniqueLabel(technique)} preset</span>
+          </div>
+        ) : (
+          <button type="button" className="cam-preset" onClick={() => void savePreset(technique)}>
+            {preset ? `Update ${techniqueLabel(technique)} preset` : `Save as ${techniqueLabel(technique)} preset`}
+          </button>
+        )
+      ) : (
+        <p className="cam-note">Choose an illumination to save these settings as its preset.</p>
+      )}
+    </section>
   );
 }
 
@@ -148,6 +232,7 @@ function ShutterArea() {
   const eye = useApp((s) => s.eye);
   const captures = useApp((s) => s.captures);
   const camStatus = useCamera((s) => s.status);
+  const canonOk = useCanon((s) => s.link === 'online' && s.camera?.state === 'connected');
   const today = useMemo(() => captures.filter((c) => c.date === todayISO()).length, [captures]);
 
   if (source === 'tether') {
@@ -176,7 +261,7 @@ function ShutterArea() {
     );
   }
 
-  const disabled = !patient || camStatus !== 'live';
+  const disabled = !patient || (source === 'canon' ? !canonOk : camStatus !== 'live');
   return (
     <div className="shutter-area">
       <button
@@ -195,8 +280,8 @@ function ShutterArea() {
       <div className="shutter-caption">
         {disabled ? (
           <>
-            <strong>{!patient ? 'Choose a patient' : 'Camera not connected'}</strong>
-            <span>{!patient ? 'to start photographing' : 'Start it from the live view'}</span>
+            <strong>{!patient ? 'Choose a patient' : source === 'canon' ? 'Canon not connected' : 'Camera not connected'}</strong>
+            <span>{!patient ? 'to start photographing' : source === 'canon' ? 'See the live view for help' : 'Start it from the live view'}</span>
           </>
         ) : (
           <>
@@ -215,6 +300,7 @@ function ShutterArea() {
 }
 
 export function Inspector() {
+  const isCanon = useApp((s) => s.settings.source === 'canon');
   return (
     <aside className="inspector" aria-label="Capture controls">
       <PatientCard />
@@ -230,6 +316,7 @@ export function Inspector() {
         </h3>
         <TechniqueGrid />
       </section>
+      {isCanon && <CameraPanel />}
       <div className="flex-1" />
       <ShutterArea />
       <div className="insp-foot">

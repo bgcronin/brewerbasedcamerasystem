@@ -5,7 +5,7 @@ Browser-based slit lamp photography for the ophthalmology clinic. Import the day
 ![Capture view](docs/screenshots/capture.webp)
 
 - **Runs entirely on the clinic PC.** Nothing is uploaded. Patient details and photographs live in the browser's database and, optionally, in an archive folder you choose (a local drive or network share).
-- **Works with your cameras.** The CSO Mizar (or any USB camera) gives live view and capture. The Canon EOS sends full-resolution stills through EOS Utility's tethered shooting.
+- **Works with your cameras.** The Canon EOS connects directly through **Lumen Camera Link**, built on Canon's SDK: live view in Lumen, the shutter fired from Lumen or a foot switch, and ISO, shutter speed, aperture and white balance with a preset for each illumination. The CSO Mizar (or any USB camera) gives live view and capture in the browser.
 - **Built for the slit lamp room.** A dark "Night" theme that doesn't spoil dark adaptation, a large shutter, Space or foot-switch capture, R/L eye keys, and safety cues: the eye colour runs through the live view, the shutter ring and every thumbnail.
 
 | Import a clinic list | Review, compare, export |
@@ -25,6 +25,10 @@ npm start
 ```
 
 Open **http://localhost:4173** in Chrome or Edge. To make it feel like a native app, click the install icon in the address bar (⊕ "Install Lumen"). It then opens in its own window and works offline.
+
+**On the computer with the Canon**, use the helper instead: double-click `helper/Start Camera Link.command` (Mac) or `helper/Start Camera Link.bat` (Windows). It builds Lumen, connects the camera and opens Lumen at **http://localhost:47800**. See [Canon EOS: direct control](#canon-eos-direct-control-recommended).
+
+> Pick one address per computer and stick to it. The browser keeps Lumen's patients and photos per address, so data saved at `localhost:4173` won't appear at `localhost:47800`. The archive folder is the same either way.
 
 For development with live reload: `npm run dev` → http://localhost:5173.
 
@@ -61,9 +65,24 @@ The Mizar is a 5-megapixel (2448 × 2048) USB 3.0 camera.
 - A camera can only be used by one program at a time. Close Phoenix's live view before using live mode in Lumen.
 - If the image is mirrored or rotated by the beam splitter, use the **rotate / mirror** buttons on the live view. They are remembered for that camera.
 
-### Canon EOS: full resolution, recommended
+### Canon EOS: direct control (recommended)
 
-This uses Canon's free **EOS Utility 3** for tethered shooting. Lumen watches the folder EOS Utility saves into.
+![Canon direct control](docs/screenshots/canon-direct.webp)
+
+**Lumen Camera Link** (in [`helper/`](helper/README.md)) is a small companion program that drives the Canon through Canon's SDK on Windows or Mac. With the EOS 60D:
+
+- Canon live view on Lumen's stage, with a viewfinder-style readout (M · 1/125 · f/8 · ISO 400).
+- The shutter fires from Lumen: Space, a foot switch on the computer, or the on-screen button. Photos taken with the camera's own shutter button are filed too.
+- **ISO, shutter speed, aperture and white balance** can be changed from the Camera panel. Save them as a **preset for each illumination**: choose Cobalt, set ISO 1600, *Save as Cobalt preset*, and from then on pressing 6 dials it straight back in.
+- Every photo records the settings it was taken with, and the memory card keeps a backup copy.
+
+**Where to put Canon's SDK:** unzip it into [`helper/sdk/`](helper/sdk/README.md), keeping Canon's folder names. That folder is excluded from git, because the SDK is licensed to you and this repository is public. The full setup (camera menu settings, EOS Utility auto-start, Mac first-run) is in [helper/README.md](helper/README.md).
+
+No camera handy? `cd helper && npm install && npm run simulate` starts a pretend EOS 60D for trying the whole flow.
+
+### Canon EOS: folder watch (no helper)
+
+The fallback when Camera Link can't be used. Canon's free **EOS Utility 3** saves each shot to a folder, and Lumen watches that folder.
 
 1. Connect the camera by USB and open **EOS Utility → Remote Shooting**.
 2. In EOS Utility **Preferences → Destination Folder**, choose an empty folder, e.g. `C:\SlitLamp\EOS`. Tip: in Preferences, set EOS Utility to start straight in Remote Shooting.
@@ -71,10 +90,6 @@ This uses Canon's free **EOS Utility 3** for tethered shooting. Lumen watches th
 4. In Lumen: **Camera source → Choose the EOS Utility folder…** and pick the same folder.
 
 Now every shot, whether from the camera's shutter, a remote release or a foot switch wired to the camera, appears in Lumen within a second, filed to the selected patient and eye. Photos that arrive before you've chosen a patient are held. Pick the patient, then file them with one click. Original files stay in the EOS folder unless you turn on *Settings → Tidy the Canon folder*.
-
-### Canon EOS: live view instead
-
-Install Canon's **EOS Webcam Utility**, or use the camera's clean HDMI output with a USB capture card. The Canon then appears under **Live cameras** like any webcam. This is convenient for live framing, but resolution is limited to video, usually 1920 × 1080. Use tethering (above) for full-resolution stills.
 
 ### Foot switch
 
@@ -157,24 +172,27 @@ Press **?** in the app for the full list.
 src/
   lib/            framework-free logic: CSV parsing, importers, dates & names, IndexedDB,
                   archive writer, folder watcher, encoder, ZIP, file naming
-  state/          app state (zustand): store.ts, camera.ts, keyboard actions
+  state/          app state (zustand): store.ts, camera.ts, canon.ts (Camera Link client), keyboard actions
   components/     React UI
   styles/         design tokens (tokens.css), base controls, layout
   workers/        image encoder (OffscreenCanvas)
-tests/            unit tests (Vitest) and an end-to-end smoke test (Playwright)
+helper/           Lumen Camera Link: Node + koffi bindings to Canon's EDSDK, simulator, local server
+tests/            unit tests (Vitest) and end-to-end tests (Playwright)
 ```
 
 ```bash
 npm test            # unit tests: CSV, dates, names, column mapping, ZIP, database import
 npm run typecheck
 node tests/e2e/smoke.cjs   # with `npm start` running; needs Playwright + Chromium
+node tests/e2e/canon.cjs   # after `npm run build`; starts the helper's simulated EOS 60D itself
+cd helper && npm test      # runs the real Canon SDK bindings against a stand-in library (needs a C compiler)
 ```
 
-The smoke test imports the sample list, captures from Chromium's fake camera, checks the archive files, and simulates a Canon shot landing in the tethered folder.
+The smoke test imports the sample list, captures from Chromium's fake camera, checks the archive files, and simulates a Canon shot landing in the tethered folder. The Canon test covers live view, changing settings, saving and applying presets, capture with exposure metadata, and the helper going away and coming back.
 
 ### Possible next steps
 
 - **DICOM export** (VL Photographic Image) for PACS or Forum integration.
 - HL7 / FHIR worklist import from the PAS.
 - Annotation (arrows, measurements) and fluorescein grading overlays.
-- Canon CCAPI (network) control, to trigger the camera and change settings from Lumen.
+- Canon presets that also cover image quality and drive mode.

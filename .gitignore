@@ -4,3 +4,8 @@ dist
 .DS_Store
 coverage
 test-results
+
+# Canon's SDK is licensed to you — never commit it (this repository is public).
+helper/sdk/*
+!helper/sdk/README.md
+helper/node_modules

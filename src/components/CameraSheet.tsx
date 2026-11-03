@@ -3,6 +3,7 @@ import { kindLabel, mediaSupported, type CameraKind } from '../lib/camera';
 import { fsSupported } from '../lib/fsaccess';
 import type { Settings } from '../lib/types';
 import { useCamera } from '../state/camera';
+import { reconnectLink, useCanon } from '../state/canon';
 import { chooseTetherFolder, closeSheet, startTether, stopTether, updateSettings, useApp } from '../state/store';
 import { Icon, type IconName } from './Icon';
 import { Button, Modal, Segmented, SheetHeader, StatusDot, cx } from './ui';
@@ -18,6 +19,9 @@ export function CameraSheet() {
   const activeId = useCamera((s) => s.deviceId);
   const error = useCamera((s) => s.error);
   const info = useCamera((s) => s.info);
+  const canonLink = useCanon((s) => s.link);
+  const canonCam = useCanon((s) => s.camera);
+  const helper = useCanon((s) => s.helper);
 
   useEffect(() => {
     if (open) void useCamera.getState().refreshDevices();
@@ -41,6 +45,24 @@ export function CameraSheet() {
     if (useApp.getState().tether.watching) closeSheet();
   };
 
+  const chooseCanon = async () => {
+    useCamera.getState().stop();
+    stopTether();
+    await updateSettings({ source: 'canon' });
+    if (canonLink === 'offline') reconnectLink();
+    closeSheet();
+  };
+
+  const canonOn = settings.source === 'canon';
+  const canonDetail =
+    canonLink === 'online'
+      ? canonCam?.state === 'connected'
+        ? `Connected · live view, settings and presets${helper?.backend === 'simulator' ? ' · simulated camera' : ''}`
+        : canonCam?.message ?? 'Camera Link is running · waiting for the camera'
+      : canonOn
+        ? 'Camera Link isn’t running on this computer yet'
+        : 'Needs Lumen Camera Link running on this computer';
+
   const setResolution = async (resolution: Settings['resolution']) => {
     await updateSettings({ resolution });
     if (settings.source === 'live' && status === 'live') await useCamera.getState().start(activeId, resolution);
@@ -50,6 +72,27 @@ export function CameraSheet() {
     <Modal open={open} onClose={closeSheet} width={600} labelledBy="camera-title">
       <SheetHeader id="camera-title" title="Camera source" subtitle="Choose how photographs reach Lumen." onClose={closeSheet} />
       <div className="sheet-body">
+        <section className="source-section">
+          <div className="source-section-head">
+            <h3>Canon EOS · direct</h3>
+            <span className="source-badge">Recommended</span>
+          </div>
+          <p className="section-note">
+            Full control through Lumen Camera Link: live view, shutter from Lumen or the foot switch, and ISO, shutter speed, aperture and white balance with presets for each
+            illumination.
+          </p>
+          <button type="button" className={cx('source-card', canonOn && canonCam?.state === 'connected' && 'is-on')} onClick={() => void chooseCanon()}>
+            <span className="source-card-icon">
+              <Icon name="camera" size={20} />
+            </span>
+            <span className="source-card-text">
+              <strong>{canonCam?.state === 'connected' ? canonCam.model : 'Canon EOS via Camera Link'}</strong>
+              <span>{canonDetail}</span>
+            </span>
+            {canonOn && canonCam?.state === 'connected' ? <StatusDot tone="live" /> : <Icon name="chevronRight" size={16} />}
+          </button>
+        </section>
+
         <section className="source-section">
           <div className="source-section-head">
             <h3>Live cameras</h3>
@@ -105,10 +148,10 @@ export function CameraSheet() {
 
         <section className="source-section">
           <div className="source-section-head">
-            <h3>Canon EOS · full resolution</h3>
+            <h3>Folder watch · EOS Utility or CSO Phoenix</h3>
           </div>
           <p className="section-note">
-            Tether the Canon with EOS Utility’s <em>Remote Shooting</em> and set its destination folder. Lumen watches that folder and files each shot to the selected patient and eye the moment it lands. This also works with any program that saves photos to a folder, such as CSO Phoenix.
+            The fallback when Camera Link isn’t available. Point EOS Utility’s <em>Remote Shooting</em> (or CSO Phoenix) at a folder, and Lumen files each new photo to the selected patient and eye.
           </p>
           <button
             type="button"

@@ -53,9 +53,12 @@ export interface FolderState {
 
 interface HeldPhoto {
   file: File;
-  path: string;
-  parent: FileSystemDirectoryHandle;
   receivedAt: number;
+  source: 'tether' | 'canon';
+  /** Tethered folder the file came from (for tidying up afterwards). */
+  parent?: FileSystemDirectoryHandle;
+  deviceLabel?: string;
+  exposure?: Capture['exposure'];
 }
 
 interface AppState {
@@ -122,8 +125,8 @@ let rawHintShown = false;
 
 export function toast(t: Omit<Toast, 'id'>): string {
   const id = uid();
-  set((s) => ({ toasts: [...s.toasts.slice(-3), { id, ...t }] }));
-  const ms = t.duration ?? (t.action ? 6500 : t.tone === 'error' ? 7000 : 3200);
+  set((s) => ({ toasts: [...s.toasts.slice(-2), { id, ...t }] }));
+  const ms = t.duration ?? (t.action ? 6500 : t.tone === 'error' ? 7000 : t.tone === 'success' ? 2600 : 3200);
   window.setTimeout(() => dismissToast(id), ms);
   return id;
 }
@@ -366,6 +369,10 @@ interface IngestInput {
   deviceLabel?: string;
   transform: Transform;
   takenAt?: number;
+  /** Labels captured at the moment the shutter was pressed (default: current selection). */
+  eye?: Eye;
+  technique?: string | null;
+  exposure?: Capture['exposure'];
 }
 
 /** The single path every photo takes into the system: encode → store → archive. */
@@ -373,7 +380,9 @@ export async function ingest(input: IngestInput, patientOverride?: Patient): Pro
   const s = get();
   const patient = patientOverride ?? s.patient;
   if (!patient) return null;
-  const { eye, technique, settings } = s;
+  const { settings } = s;
+  const eye = input.eye ?? s.eye;
+  const technique = input.technique !== undefined ? input.technique : s.technique;
   const takenAt = input.takenAt ?? Date.now();
   set((st) => ({ processing: st.processing + 1 }));
   try {
@@ -411,6 +420,7 @@ export async function ingest(input: IngestInput, patientOverride?: Patient): Pro
       fileName: captureFileName(patient, { takenAt, eye, technique: technique ?? undefined }, mime),
       source: input.source,
       deviceLabel: input.deviceLabel,
+      exposure: input.exposure,
     };
     await db.addCapture(capture, { id: capture.id, full, thumb });
     primeThumb(capture.id, thumb);
@@ -647,21 +657,29 @@ export function stopTether(): void {
 async function onTetherFile(file: File, path: string, _handle: FileSystemFileHandle, parent: FileSystemDirectoryHandle): Promise<void> {
   set((s) => ({ tether: { ...s.tether, lastAt: Date.now() } }));
   if (!get().patient) {
-    set((s) => ({ held: [...s.held, { file, path, parent, receivedAt: Date.now() }] }));
-    toast({ tone: 'warning', message: 'Photo received — choose a patient', detail: 'It’s waiting and will be filed to the patient you select.' });
+    holdPhoto({ file, parent, receivedAt: Date.now(), source: 'tether' });
     return;
   }
-  await fileTetherPhoto({ file, path, parent, receivedAt: Date.now() });
+  void path;
+  await fileHeldPhoto({ file, parent, receivedAt: Date.now(), source: 'tether' });
 }
 
-async function fileTetherPhoto(h: HeldPhoto, patient?: Patient): Promise<void> {
+/** A photo arrived with no patient selected: keep it until one is chosen. */
+export function holdPhoto(h: HeldPhoto): void {
+  set((s) => ({ held: [...s.held, h] }));
+  toast({ tone: 'warning', message: 'Photo received — choose a patient', detail: 'It’s waiting and will be filed to the patient you select.' });
+}
+
+/** File a photo that arrived from the camera rather than from a shutter press in Lumen. */
+export async function fileHeldPhoto(h: HeldPhoto, patient?: Patient): Promise<void> {
   if (get().settings.shutterSound) playShutter();
   set((st) => ({ flashTick: st.flashTick + 1 }));
+  const label = h.deviceLabel ?? 'Canon EOS (tethered)';
   const c = await ingest(
-    { original: h.file, source: 'tether', deviceLabel: 'Canon EOS (tethered)', transform: transformFor('Canon EOS (tethered)'), takenAt: h.file.lastModified || h.receivedAt },
+    { original: h.file, source: h.source, deviceLabel: label, transform: transformFor(label), takenAt: h.file.lastModified || h.receivedAt, exposure: h.exposure },
     patient,
   );
-  if (c && get().settings.removeTetherOriginals) {
+  if (c && h.source === 'tether' && h.parent && get().settings.removeTetherOriginals) {
     try {
       await h.parent.removeEntry(h.file.name);
     } catch {
@@ -674,7 +692,7 @@ export async function fileHeldPhotos(): Promise<void> {
   const { held, patient } = get();
   if (!patient || !held.length) return;
   set({ held: [] });
-  for (const h of held) await fileTetherPhoto(h, patient);
+  for (const h of held) await fileHeldPhoto(h, patient);
   toast({ tone: 'success', message: `${held.length} waiting photo${held.length === 1 ? '' : 's'} filed` });
 }
 

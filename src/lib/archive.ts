@@ -28,6 +28,7 @@ interface ManifestImage {
   device?: string;
   note?: string;
   starred?: boolean;
+  exposure?: Capture['exposure'];
 }
 
 interface Manifest {
@@ -60,6 +61,7 @@ function imageEntry(c: Capture, file: string): ManifestImage {
     device: c.deviceLabel,
     note: c.note,
     starred: c.starred || undefined,
+    exposure: c.exposure,
   };
 }
 

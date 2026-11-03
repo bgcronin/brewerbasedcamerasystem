@@ -7,6 +7,7 @@ import { useFullImage } from '../lib/thumbs';
 import { techniqueLabel, type Capture, type Transform } from '../lib/types';
 import { toggleStageFullscreen } from '../state/actions';
 import { refreshStreamInfo, useCamera } from '../state/camera';
+import { onFrame, reconnectLink, setCanonLiveView, useCanon } from '../state/canon';
 import {
   deleteCapture,
   discardHeldPhotos,
@@ -200,6 +201,118 @@ function TetherFeed({ zoom, lastCapture }: { zoom: number; lastCapture?: Capture
   );
 }
 
+/** Live view from the Canon via Lumen Camera Link, drawn straight onto a canvas. */
+function CanonFeed({ zoom, transform }: { zoom: number; transform: Transform }) {
+  const link = useCanon((s) => s.link);
+  const camera = useCanon((s) => s.camera);
+  const liveView = useCanon((s) => s.liveView);
+  const lvError = useCanon((s) => s.liveViewError);
+  const size = useCanon((s) => s.frameSize);
+  const box = useRef<HTMLDivElement>(null);
+  const canvas = useRef<HTMLCanvasElement>(null);
+  const [hasFrame, setHasFrame] = useState(false);
+  const tf = useFeedTransform(box, size?.w ?? 0, size?.h ?? 0, transform, zoom);
+  const connected = link === 'online' && camera?.state === 'connected';
+
+  useEffect(() => {
+    setCanonLiveView(true);
+    const off = onFrame((bmp) => {
+      const c = canvas.current;
+      if (!c) return;
+      if (c.width !== bmp.width || c.height !== bmp.height) {
+        c.width = bmp.width;
+        c.height = bmp.height;
+      }
+      c.getContext('2d')?.drawImage(bmp, 0, 0);
+      setHasFrame(true);
+    });
+    return () => {
+      off();
+      setCanonLiveView(false);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!connected || !liveView) setHasFrame(false);
+  }, [connected, liveView]);
+
+  let empty: { icon: 'camera' | 'alert' | 'usb'; title: string; text?: string; error?: boolean; retry?: boolean } | null = null;
+  if (link !== 'online')
+    empty = {
+      icon: 'usb',
+      title: link === 'connecting' ? 'Looking for Lumen Camera Link…' : 'Start Lumen Camera Link',
+      text: 'Double-click “Start Camera Link” in the helper folder on this computer. Lumen connects as soon as it’s running.',
+      retry: true,
+    };
+  else if (!camera || camera.state === 'starting' || camera.state === 'searching')
+    empty = {
+      icon: 'camera',
+      title: 'Connect the Canon',
+      text: `${camera?.message ?? 'Plug in the USB cable and switch the camera on.'} Quit EOS Utility if it opens by itself.`,
+    };
+  else if (camera.state === 'error' || camera.state === 'unavailable') empty = { icon: 'alert', title: 'Canon unavailable', text: camera.message, error: true, retry: true };
+
+  return (
+    <div className="feed" ref={box}>
+      <canvas ref={canvas} className={cx('feed-video', connected && hasFrame && 'is-live')} style={{ transform: tf }} />
+      {empty ? (
+        <div className="stage-empty">
+          <div className={cx('stage-empty-icon', empty.error && 'is-error')}>
+            <Icon name={empty.icon} size={26} />
+          </div>
+          <h3>{empty.title}</h3>
+          {empty.text && <p>{empty.text}</p>}
+          <div className="stage-empty-actions">
+            {empty.retry && (
+              <Button variant="primary" icon="refresh" onClick={reconnectLink}>
+                Try again
+              </Button>
+            )}
+            <Button icon="usb" onClick={() => openSheet({ type: 'camera' })}>
+              Choose source
+            </Button>
+          </div>
+        </div>
+      ) : (
+        !hasFrame && (
+          <div className="stage-empty stage-empty-quiet">
+            {lvError ? (
+              <>
+                <div className="stage-empty-icon is-error">
+                  <Icon name="alert" size={24} />
+                </div>
+                <h3>{camera?.model} is ready</h3>
+                <p>{lvError} You can still take photos.</p>
+              </>
+            ) : (
+              <>
+                <div className="spinner" />
+                <p>Starting live view…</p>
+              </>
+            )}
+          </div>
+        )
+      )}
+    </div>
+  );
+}
+
+/** Viewfinder-style readout of the Canon's current exposure. */
+function ExposureReadout() {
+  const props = useCanon((s) => s.props);
+  if (!props.mode) return null;
+  const items = [props.mode?.value, props.tv?.value, props.av?.value, props.iso?.value && `ISO ${props.iso.value}`, props.wb?.value].filter(Boolean);
+  return (
+    <span className="exposure-readout glass" title="Camera settings">
+      {items.map((t, i) => (
+        <span key={i} className={i === 0 ? 'exposure-mode' : undefined}>
+          {t}
+        </span>
+      ))}
+    </span>
+  );
+}
+
 function HeldBanner() {
   const held = useApp((s) => s.held);
   const patient = useApp((s) => s.patient);
@@ -240,7 +353,9 @@ function Stage({ lastCapture }: { lastCapture?: Capture }) {
   const [zoom, setZoom] = useState<(typeof ZOOMS)[number]>(1);
   const [isFull, setFull] = useState(false);
 
-  const deviceKey = source === 'tether' ? 'Canon EOS (tethered)' : label;
+  const canonLink = useCanon((s) => s.link);
+  const canonCam = useCanon((s) => s.camera);
+  const deviceKey = source === 'tether' ? 'Canon EOS (tethered)' : source === 'canon' ? canonCam?.model ?? 'Canon EOS' : label;
   const t = transformFor(deviceKey);
 
   useEffect(() => {
@@ -249,12 +364,19 @@ function Stage({ lastCapture }: { lastCapture?: Capture }) {
     return () => document.removeEventListener('fullscreenchange', onFs);
   }, []);
 
-  const live = source === 'live' ? status === 'live' : tether.watching;
+  const live =
+    source === 'live' ? status === 'live' : source === 'canon' ? canonLink === 'online' && canonCam?.state === 'connected' : tether.watching;
   const kind = label ? classifyDevice(label) : 'generic';
 
   return (
     <div className={cx('stage', live && 'is-live')}>
-      {source === 'live' ? <LiveFeed zoom={zoom} transform={t} /> : <TetherFeed zoom={zoom} lastCapture={lastCapture} />}
+      {source === 'live' ? (
+        <LiveFeed zoom={zoom} transform={t} />
+      ) : source === 'canon' ? (
+        <CanonFeed zoom={zoom} transform={t} />
+      ) : (
+        <TetherFeed zoom={zoom} lastCapture={lastCapture} />
+      )}
 
       {reticle && live && <Reticle />}
       {flashTick > 0 && <div key={flashTick} className="flash" aria-hidden="true" />}
@@ -289,7 +411,7 @@ function Stage({ lastCapture }: { lastCapture?: Capture }) {
           >
             {zoom}×
           </button>
-          {source === 'live' && (
+          {source !== 'tether' && (
             <>
               <IconButton icon="rotate" label="Rotate 90°" onClick={() => void setTransform(deviceKey, { ...t, rotate: (((t.rotate + 90) % 360) as Transform['rotate']) })} />
               <IconButton icon="flip" label="Mirror image" active={t.flipH} onClick={() => void setTransform(deviceKey, { ...t, flipH: !t.flipH })} />
@@ -313,6 +435,13 @@ function Stage({ lastCapture }: { lastCapture?: Capture }) {
                 </span>
               )}
             </>
+          ) : source === 'canon' ? (
+            <>
+              <span className="source-name">{canonCam?.state === 'connected' ? canonCam.model : 'Canon EOS'}</span>
+              <span className="source-meta">
+                {canonLink !== 'online' ? 'Camera Link not running' : canonCam?.state === 'connected' ? 'Direct via Camera Link' : 'Not connected'}
+              </span>
+            </>
           ) : (
             <>
               <span className="source-name">Canon EOS · tethered</span>
@@ -323,12 +452,15 @@ function Stage({ lastCapture }: { lastCapture?: Capture }) {
         </button>
       </div>
 
-      {processing > 0 && (
+      {(processing > 0 || (source === 'canon' && live)) && (
         <div className="hud hud-br">
-          <span className="saving glass">
-            <span className="spinner spinner-sm" />
-            Saving
-          </span>
+          {processing > 0 && (
+            <span className="saving glass">
+              <span className="spinner spinner-sm" />
+              Saving
+            </span>
+          )}
+          {source === 'canon' && live && <ExposureReadout />}
         </div>
       )}
 

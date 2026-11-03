@@ -31,7 +31,15 @@ export interface Visit {
   createdAt: number;
 }
 
-export type CaptureSource = 'live' | 'tether' | 'file';
+export type CaptureSource = 'live' | 'tether' | 'file' | 'canon';
+
+/** Camera exposure settings as the camera labels them, e.g. { iso: '400', tv: '1/125', av: 'f/8', wb: 'Flash' }. */
+export interface CameraValues {
+  iso?: string;
+  tv?: string;
+  av?: string;
+  wb?: string;
+}
 
 export interface Capture {
   id: string;
@@ -53,6 +61,8 @@ export interface Capture {
   starred?: boolean;
   /** Path relative to the archive folder once written to disk. */
   archivedPath?: string;
+  /** Settings the camera used, when it reports them (Canon direct). */
+  exposure?: CameraValues & { mode?: string };
 }
 
 export interface StoredImage {
@@ -86,7 +96,12 @@ export interface Settings {
   captureKeys: string[];
   dateOrder: DateOrder;
   reticle: boolean;
-  source: 'live' | 'tether';
+  /** live = browser camera, tether = watched folder, canon = Lumen Camera Link. */
+  source: 'live' | 'tether' | 'canon';
+  /** Canon settings to apply automatically when an illumination technique is chosen. */
+  cameraPresets: Record<string, CameraValues>;
+  /** Where Lumen Camera Link listens; empty = automatic. */
+  cameraLinkUrl: string;
   deviceId?: string;
   /** Per-device orientation fixes, keyed by device label. */
   transforms: Record<string, Transform>;
@@ -108,6 +123,8 @@ export const DEFAULT_SETTINGS: Settings = {
   source: 'live',
   transforms: {},
   resolution: 'auto',
+  cameraPresets: {},
+  cameraLinkUrl: '',
 };
 
 export interface Technique {

@@ -1,12 +1,12 @@
 import { importerFor } from '../lib/importers';
 import { useCamera } from './camera';
+import { canonShutter, chooseTechnique } from './canon';
 import {
   captureFromLive,
   importFiles,
   openSheet,
   selectAdjacent,
   setEye,
-  setTechnique,
   setView,
   toast,
   updateSettings,
@@ -17,6 +17,10 @@ import { TECHNIQUES } from '../lib/types';
 /** Shared by the shutter button, the keyboard and foot pedals. */
 export function shutter(): void {
   const s = useApp.getState();
+  if (s.settings.source === 'canon') {
+    void canonShutter();
+    return;
+  }
   if (s.settings.source === 'tether') {
     toast({ message: 'Use the shutter on the Canon', detail: 'In tethered mode each photo arrives automatically from EOS Utility.' });
     return;
@@ -90,7 +94,7 @@ export function onGlobalKeyDown(e: KeyboardEvent): void {
   const n = Number(e.key);
   if (n >= 1 && n <= TECHNIQUES.length) {
     const id = TECHNIQUES[n - 1].id;
-    setTechnique(s.technique === id ? null : id);
+    chooseTechnique(s.technique === id ? null : id);
     return;
   }
   switch (key) {
@@ -104,7 +108,7 @@ export function onGlobalKeyDown(e: KeyboardEvent): void {
       setEye('OU');
       break;
     case '0':
-      setTechnique(null);
+      chooseTechnique(null);
       break;
     case 'arrowdown':
     case 'j':

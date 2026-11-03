@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { fsSupported } from '../lib/fsaccess';
 import { formatBytes } from '../lib/naming';
-import type { DateOrder, ImageFormat, ThemePref } from '../lib/types';
+import { TECHNIQUES, type DateOrder, type ImageFormat, type ThemePref } from '../lib/types';
+import { describeValues, removePreset } from '../state/canon';
 import {
   chooseArchiveFolder,
   closeSheet,
@@ -223,6 +224,35 @@ export function SettingsSheet() {
             </Row>
             <Row title="Tidy the Canon folder" detail="Delete each photo from the EOS Utility folder once it’s safely stored.">
               <Switch checked={settings.removeTetherOriginals} onChange={(v) => void updateSettings({ removeTetherOriginals: v })} label="Remove originals after import" />
+            </Row>
+          </div>
+        </section>
+
+        <section className="set-group">
+          <h3>Canon camera presets</h3>
+          <div className="set-card">
+            {TECHNIQUES.filter((t) => settings.cameraPresets[t.id]).length === 0 ? (
+              <p className="set-note">
+                With the Canon connected directly, set ISO, shutter speed and aperture in the camera panel, then choose <em>Save as … preset</em>. Choosing that illumination later dials the
+                settings back in.
+              </p>
+            ) : (
+              TECHNIQUES.filter((t) => settings.cameraPresets[t.id]).map((t) => (
+                <Row key={t.id} title={t.label} detail={describeValues(settings.cameraPresets[t.id])}>
+                  <Button size="sm" variant="ghost" onClick={() => void removePreset(t.id)}>
+                    Remove
+                  </Button>
+                </Row>
+              ))
+            )}
+            <Row title="Camera Link address" detail="Leave blank unless Camera Link runs on a different port.">
+              <input
+                className="input input-sm"
+                value={settings.cameraLinkUrl}
+                placeholder="ws://127.0.0.1:47800/camera"
+                spellCheck={false}
+                onChange={(e) => void updateSettings({ cameraLinkUrl: e.target.value.trim() })}
+              />
             </Row>
           </div>
         </section>
