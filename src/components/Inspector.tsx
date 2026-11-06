@@ -193,6 +193,7 @@ function CameraPanel() {
                 onChange={(e) => void setCanonProp(k, e.target.value)}
                 aria-label={EXPOSURE_LABELS[k]}
               >
+                {!p?.value && <option value="">—</option>}
                 {p?.value && !p.options?.includes(p.value) && <option value={p.value}>{p.value}</option>}
                 {(p?.options ?? []).map((o) => (
                   <option key={o} value={o}>

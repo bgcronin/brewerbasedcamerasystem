@@ -2705,3 +2705,74 @@ button.cam-preset:hover {
 .stage-empty-quiet {
   background: none;
 }
+
+/* ───────── Review fixes ───────── */
+
+.select-bar {
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  backdrop-filter: blur(18px) saturate(160%);
+  box-shadow:
+    inset 0 0 0 1px var(--hairline-2),
+    inset 0 1px 0 var(--highlight),
+    var(--shadow-pop);
+  color: var(--text);
+}
+.film-note {
+  font-size: 11.5px;
+  color: var(--warning);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ───────── Inspector on short screens (1280×800 laptops) ───────── */
+
+.shutter-area {
+  position: sticky;
+  bottom: 44px;
+  background: var(--surface);
+  z-index: 1;
+}
+:root:not([data-theme='light']) .shutter-area {
+  background: #070b12;
+}
+.insp-foot {
+  position: sticky;
+  bottom: 0;
+  padding-bottom: 2px;
+  background: var(--surface);
+  z-index: 1;
+}
+:root:not([data-theme='light']) .insp-foot {
+  background: #070b12;
+}
+@media (max-height: 860px) {
+  .inspector {
+    gap: 12px;
+  }
+  .eye-opt {
+    height: 50px;
+  }
+  .eye-opt-code {
+    font-size: 17px;
+  }
+  .tech {
+    height: 31px;
+  }
+  .pcard {
+    gap: 8px;
+    padding: 12px;
+  }
+  .shutter {
+    width: 72px;
+    height: 72px;
+  }
+  .shutter-area {
+    gap: 8px;
+    padding: 6px 0 2px;
+  }
+  .cam-field {
+    height: 44px;
+  }
+}

@@ -48,9 +48,23 @@ export function importerFor(file: File): WorklistImporter | undefined {
 
 export const ACCEPT_ALL = IMPORTERS.map((i) => i.accept).join(',');
 
-/** Reads text, falling back to Windows-1252 for legacy exports that are not UTF-8. */
-async function readText(file: File): Promise<string> {
+/** UTF-16 by BOM, or by the NUL in every other byte that ASCII text has in UTF-16LE (Excel "Unicode Text" saves). */
+function detectUtf16(bytes: Uint8Array): 'utf-16le' | 'utf-16be' | undefined {
+  if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) return 'utf-16le';
+  if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) return 'utf-16be';
+  const head = bytes.subarray(0, Math.min(64, bytes.length) & ~1);
+  if (head.length < 4) return undefined;
+  for (let i = 0; i < head.length; i += 2) {
+    if (head[i] === 0 || head[i + 1] !== 0) return undefined;
+  }
+  return 'utf-16le';
+}
+
+/** Reads text as UTF-16, UTF-8, or Windows-1252 for legacy exports that are neither. */
+export async function readText(file: File): Promise<string> {
   const buf = await file.arrayBuffer();
+  const utf16 = detectUtf16(new Uint8Array(buf));
+  if (utf16) return new TextDecoder(utf16).decode(buf);
   try {
     return new TextDecoder('utf-8', { fatal: true }).decode(buf);
   } catch {

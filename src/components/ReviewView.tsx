@@ -131,7 +131,7 @@ export function ReviewView() {
             {[patient.mrn, patient.dob && `Born ${formatShortDate(patient.dob)}${age != null ? ` (${age})` : ''}`].filter(Boolean).join(' · ')}
             <span className="muted">
               {' · '}
-              {captures.length} photo{captures.length === 1 ? '' : 's'} across {byDate.length || 0} visit{byDate.length === 1 ? '' : 's'}
+              {shown.length} photo{shown.length === 1 ? '' : 's'} across {byDate.length || 0} visit{byDate.length === 1 ? '' : 's'}
             </span>
           </p>
         </div>
@@ -236,7 +236,7 @@ export function ReviewView() {
       )}
 
       {selecting && (
-        <div className="select-bar glass">
+        <div className="select-bar">
           <span>{selected.length === 2 ? 'Ready to compare' : `Select two photos · ${selected.length} of 2`}</span>
           <Button size="sm" variant="primary" disabled={selected.length !== 2} onClick={() => (openCompare(selected[0], selected[1]), setSelecting(false), setSelected([]))}>
             Compare

@@ -1,4 +1,4 @@
-import { inferDateOrder, parseDate, parseTime, type DateOrderResolved } from '../dates';
+import { inferDateOrderDetailed, parseDate, parseTime, type DateOrderResolved } from '../dates';
 import { normaliseNamePart, normaliseSex, splitFullName } from '../names';
 import type { ImportedRecord, PatientField } from './types';
 
@@ -49,6 +49,9 @@ export function normaliseHeader(h: string): string {
     .trim();
 }
 
+/** Synonyms too generic to match loosely on their own: "Last Visit" is not a surname column. */
+const NO_LOOSE_MATCH = new Set(['last', 'first', 'second', 'id', 'pid', 'no']);
+
 function scoreHeader(header: string, field: Exclude<PatientField, 'ignore'>): number {
   const h = normaliseHeader(header);
   if (!h) return 0;
@@ -60,7 +63,7 @@ function scoreHeader(header: string, field: Exclude<PatientField, 'ignore'>): nu
   for (const s of syn) {
     const sw = s.split(' ');
     if (sw.length > 1 && sw.every((w) => words.has(w))) best = Math.max(best, 60 + sw.length);
-    else if (sw.length === 1 && s.length > 2 && words.has(s)) best = Math.max(best, 50);
+    else if (sw.length === 1 && s.length > 2 && !NO_LOOSE_MATCH.has(s) && words.has(s)) best = Math.max(best, 50);
   }
   if (field === 'dob' && /birth/.test(h)) best = Math.max(best, 70);
   if (field === 'lastName' && /surname/.test(h)) best = Math.max(best, 70);
@@ -102,27 +105,64 @@ export function detectMapping(headers: string[]): PatientField[] {
   return mapping;
 }
 
+/** Hospital numbers: up to four letters, then digits, e.g. H100234, NHS 123 456 7890, 10234. */
+const MRN_SHAPE = /^[A-Za-z]{0,4}[\s-]?\d{3,}[A-Za-z0-9\s-]*$/;
+
+function median(nums: number[]): number {
+  const sorted = [...nums].sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)];
+}
+
 /** For files without a header row, guess from the values themselves. */
 export function guessMappingFromValues(rows: string[][]): PatientField[] {
   const width = Math.max(0, ...rows.map((r) => r.length));
   const mapping: PatientField[] = Array.from({ length: width }, () => 'ignore');
   const used = new Set<PatientField>();
+  const pick = (col: number, f: PatientField) => {
+    if (!used.has(f)) {
+      mapping[col] = f;
+      used.add(f);
+    }
+  };
   const sample = rows.slice(0, 30);
+  const nameCols: { col: number; allCaps: boolean }[] = [];
+  const dateCols: { col: number; year: number }[] = [];
   for (let col = 0; col < width; col++) {
-    const vals = sample.map((r) => r[col] ?? '').filter(Boolean);
+    const vals = sample.map((r) => (r[col] ?? '').trim()).filter(Boolean);
     if (!vals.length) continue;
     const ratio = (pred: (v: string) => boolean) => vals.filter(pred).length / vals.length;
-    const pick = (f: PatientField) => {
-      if (!used.has(f)) {
-        mapping[col] = f;
-        used.add(f);
-      }
-    };
-    if (ratio((v) => !!parseTime(v) && !parseDate(v)) > 0.8) pick('time');
-    else if (ratio((v) => !!parseDate(v, 'DMY', true)) > 0.8) pick(used.has('dob') ? 'date' : 'dob');
-    else if (ratio((v) => /^[mfu]$|^(male|female)$/i.test(v)) > 0.8) pick('sex');
-    else if (ratio((v) => /^[A-Za-z]{0,3}\d{3,}[A-Za-z0-9]*$/.test(v.replace(/\s/g, ''))) > 0.8) pick('mrn');
-    else if (ratio((v) => /^[\p{L}'’\- ,.]+$/u.test(v) && v.length > 2) > 0.8) pick('fullName');
+    const parsed = vals.map((v) => parseDate(v, 'DMY', true));
+    const dates = parsed.filter((d): d is string => !!d);
+    // Bare digit strings (10234, 20261103) are hospital numbers, not dates; a date column has separators.
+    const datedWithSeparators = vals.filter((v, i) => parsed[i] && /[\s/.\-]/.test(v)).length / vals.length >= 0.8;
+    if (ratio((v) => MRN_SHAPE.test(v)) >= 0.8 && !datedWithSeparators) pick(col, 'mrn');
+    else if (ratio((v) => !!parseTime(v) && !parseDate(v)) >= 0.8) pick(col, 'time');
+    else if (dates.length / vals.length >= 0.8) dateCols.push({ col, year: median(dates.map((d) => Number(d.slice(0, 4)))) });
+    else if (ratio((v) => /^[mfu]$|^(male|female)$/i.test(v)) >= 0.8) pick(col, 'sex');
+    else if (ratio((v) => /^[\p{L}'’\- ,.]+$/u.test(v) && v.length > 2) >= 0.8) {
+      if (ratio((v) => v.includes(',')) >= 0.8) pick(col, 'fullName');
+      else nameCols.push({ col, allCaps: ratio((v) => v === v.toUpperCase()) >= 0.8 });
+    }
+  }
+
+  // Two plain name columns: "SMITH | John" is surname first, "John | Smith" is forename first.
+  if (!used.has('fullName') && nameCols.length >= 2) {
+    const [a, b] = nameCols;
+    pick(a.col, a.allCaps ? 'lastName' : 'firstName');
+    pick(b.col, a.allCaps ? 'firstName' : 'lastName');
+  } else if (!used.has('fullName') && nameCols.length === 1) {
+    pick(nameCols[0].col, 'fullName');
+  }
+
+  // Two date columns: the one with the older median year is the date of birth.
+  const thisYear = new Date().getFullYear();
+  if (dateCols.length === 1) pick(dateCols[0].col, 'dob');
+  else if (dateCols.length >= 2) {
+    const [older, newer] = [...dateCols].sort((a, b) => a.year - b.year);
+    if (older.year <= thisYear - 15) {
+      pick(older.col, 'dob');
+      pick(newer.col, 'date');
+    } else pick(dateCols[0].col, 'date');
   }
   return mapping;
 }
@@ -131,6 +171,8 @@ export interface MappedImport {
   records: ImportedRecord[];
   skipped: number;
   dateOrder: DateOrderResolved;
+  /** Auto order was requested but no value could decide day/month, so the DMY default was assumed. */
+  dateOrderAmbiguous: boolean;
   datesInFile: string[];
 }
 
@@ -148,7 +190,10 @@ export function applyMapping(
   const dateValues = [colOf('dob'), colOf('date')]
     .filter((i) => i >= 0)
     .flatMap((i) => dataRows.map((r) => r[i] ?? ''));
-  const dateOrder: DateOrderResolved = dateOrderPref === 'auto' ? inferDateOrder(dateValues) : dateOrderPref;
+  const inferred = inferDateOrderDetailed(dateValues);
+  const dateOrder: DateOrderResolved = dateOrderPref === 'auto' ? inferred.order : dateOrderPref;
+  const hasNumericDate = dateValues.some((v) => /^\d{1,2}[/.\-]\d{1,2}[/.\-]\d{2,4}/.test(v.trim()));
+  const dateOrderAmbiguous = dateOrderPref === 'auto' && hasNumericDate && inferred.votes.dmy === 0 && inferred.votes.mdy === 0;
 
   const records: ImportedRecord[] = [];
   const dates = new Set<string>();
@@ -192,5 +237,5 @@ export function applyMapping(
       notes: get(row, 'notes') || undefined,
     });
   }
-  return { records, skipped, dateOrder, datesInFile: [...dates].sort() };
+  return { records, skipped, dateOrder, dateOrderAmbiguous, datesInFile: [...dates].sort() };
 }

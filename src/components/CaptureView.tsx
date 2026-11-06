@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { kindLabel, classifyDevice } from '../lib/camera';
-import { formatClock, todayISO } from '../lib/dates';
+import { formatClock, relativeDayLabel, todayISO } from '../lib/dates';
 import { fsSupported } from '../lib/fsaccess';
 import { displayName } from '../lib/names';
 import { useFullImage } from '../lib/thumbs';
@@ -501,6 +501,7 @@ function Filmstrip({ today }: { today: Capture[] }) {
   const lastId = useApp((s) => s.lastCaptureId);
   const keys = useApp((s) => s.settings.captureKeys);
   const tethered = useApp((s) => s.settings.source === 'tether');
+  const viewedDate = useApp((s) => s.date);
   const strip = useRef<HTMLDivElement>(null);
   const ids = today.map((c) => c.id);
 
@@ -516,6 +517,11 @@ function Filmstrip({ today }: { today: Capture[] }) {
     <div className="filmstrip">
       <div className="film-head">
         <span className="film-title">Today</span>
+        {viewedDate !== todayISO() && (
+          <span className="film-note" title="The clinic list is showing another day. New photos are always filed under today's visit.">
+            List shows {relativeDayLabel(viewedDate)} · new photos file under today
+          </span>
+        )}
         {today.length > 0 && (
           <span className="film-counts">
             <span className="eye-count eye-od">OD {counts.OD}</span>
@@ -553,7 +559,8 @@ function Filmstrip({ today }: { today: Capture[] }) {
 
 export function CaptureView() {
   const captures = useApp((s) => s.captures);
-  const today = useMemo(() => captures.filter((c) => c.date === todayISO()), [captures]);
+  const todayDate = todayISO(); // read on every render so the strip rolls over at midnight
+  const today = useMemo(() => captures.filter((c) => c.date === todayDate), [captures, todayDate]);
   const lastTether = useMemo(() => [...today].reverse().find((c) => c.source === 'tether'), [today]);
   return (
     <section className="capture">

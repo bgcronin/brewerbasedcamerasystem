@@ -1,6 +1,8 @@
 import type { Patient } from './types';
 
-const TITLES = /^(mr|mrs|ms|miss|mx|dr|prof|professor|master|sr|sir|dame|rev|fr|sister)\.?\s+/i;
+const TITLE_WORDS = 'mr|mrs|ms|miss|mx|dr|prof|professor|master|sr|sir|dame|rev|fr|sister';
+const TITLES = new RegExp(`^(${TITLE_WORDS})\\.?\\s+`, 'i');
+const BARE_TITLE = new RegExp(`^(${TITLE_WORDS})\\.?$`, 'i');
 
 /** "O'BRIEN" → "O'Brien", "mcdonald" → "McDonald", "anne-marie" → "Anne-Marie". */
 export function titleCase(raw: string): string {
@@ -27,14 +29,17 @@ export function splitFullName(raw: string): { firstName: string; lastName: strin
   if (!s) return { firstName: '', lastName: '' };
 
   if (s.includes(',')) {
-    const [last, ...rest] = s.split(',');
-    return { lastName: normaliseNamePart(last), firstName: normaliseNamePart(rest.join(' ').replace(TITLES, '')) };
+    // "Smith, John, Mr": a trailing title after a comma is not part of the given name.
+    const [last, ...rest] = s.split(',').map((p) => p.trim()).filter((p) => p && !BARE_TITLE.test(p));
+    return { lastName: normaliseNamePart(last ?? ''), firstName: normaliseNamePart(rest.join(' ').replace(TITLES, '')) };
   }
   const parts = s.split(' ');
   if (parts.length === 1) return { firstName: '', lastName: normaliseNamePart(parts[0]) };
 
-  // NHS-style "SMITH John": a leading ALL-CAPS token followed by mixed case means surname first.
   const isCaps = (p: string) => p.length > 1 && p === p.toUpperCase() && /\p{L}/u.test(p);
+  // "SMITH JOHN": two all-caps tokens follow the clinical surname-first convention.
+  if (parts.length === 2 && parts.every(isCaps)) return { lastName: normaliseNamePart(parts[0]), firstName: normaliseNamePart(parts[1]) };
+  // NHS-style "SMITH John": a leading ALL-CAPS token followed by mixed case means surname first.
   if (isCaps(parts[0]) && !parts.slice(1).every(isCaps)) {
     let i = 0;
     while (i < parts.length - 1 && isCaps(parts[i])) i++;

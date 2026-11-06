@@ -36,23 +36,35 @@ function getWorker(): Worker | null {
   return worker;
 }
 
-export async function encodeBitmap(req: EncodeRequest): Promise<EncodeResult> {
+/** Load the worker at start-up, so the first capture never waits on it (or finds its script missing after an update). */
+export function warmEncoder(): void {
+  getWorker();
+}
+
+function encodeOnMainThread(req: EncodeRequest): Promise<EncodeResult> {
+  return renderAndEncode(req, (width, height) => {
+    const c = document.createElement('canvas');
+    c.width = width;
+    c.height = height;
+    return c;
+  }).finally(() => req.bitmap.close());
+}
+
+/**
+ * @param original  the source file, when there is one: lets the main thread redo the job if the worker dies,
+ *                  because the bitmap itself is handed over to the worker and can't be recovered.
+ */
+export async function encodeBitmap(req: EncodeRequest, original?: Blob): Promise<EncodeResult> {
   const w = getWorker();
-  if (w) {
-    return new Promise<EncodeResult>((resolve, reject) => {
+  if (!w) return encodeOnMainThread(req);
+  try {
+    return await new Promise<EncodeResult>((resolve, reject) => {
       const jobId = nextJob++;
       jobs.set(jobId, { resolve, reject });
       w.postMessage({ ...req, jobId }, [req.bitmap]);
     });
-  }
-  try {
-    return await renderAndEncode(req, (width, height) => {
-      const c = document.createElement('canvas');
-      c.width = width;
-      c.height = height;
-      return c;
-    });
-  } finally {
-    req.bitmap.close();
+  } catch (e) {
+    if (!original) throw e;
+    return encodeOnMainThread({ ...req, bitmap: await createImageBitmap(original) });
   }
 }

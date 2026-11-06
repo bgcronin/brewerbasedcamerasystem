@@ -73,7 +73,8 @@ function assert(cond, msg) {
   await page.keyboard.press('2');
   await page.keyboard.press('Space');
   await page.waitForFunction(() => document.querySelectorAll('.film-tile').length === 2, null, { timeout: 15000 });
-  await page.waitForTimeout(800);
+  // Archive writes are asynchronous: wait until nothing is left to sync.
+  await page.waitForFunction(() => !document.querySelector('.pill-count'), null, { timeout: 15000 });
   await shot('capture');
   const files = await page.evaluate(async () => {
     const out = [];
@@ -87,13 +88,59 @@ function assert(cond, msg) {
   assert(files.some((f) => f.endsWith('_OS_slit.webp')), 'file name carries eye and technique');
   assert(files.some((f) => f.endsWith('visit.json')), 'visit.json written');
 
+  console.log('Burst');
+  // Two shutter presses in the same instant must still land in one visit.
+  await page.evaluate(() => {
+    for (let i = 0; i < 2; i++) window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space', key: ' ', bubbles: true }));
+  });
+  await page.waitForFunction(() => document.querySelectorAll('.film-tile').length === 4, null, { timeout: 15000 });
+  assert((await page.locator('.prow').count()) === 12, 'burst did not duplicate the patient on the list');
+
   console.log('Review');
   await page.keyboard.press('v');
   await page.waitForSelector('.review .tile');
-  assert((await page.locator('.review .tile').count()) === 2, 'review shows both photos');
+  assert((await page.locator('.review .tile').count()) === 4, 'review shows all photos');
+  assert((await page.locator('.visit-block').count()) === 1, 'all photos sit under one visit');
   await shot('review');
   await page.click('.tile >> nth=0');
   await page.waitForSelector('.viewer .zoom-pane img');
+
+  console.log('Viewer safety');
+  // A held Delete key auto-repeats: only the first press may act.
+  await page.evaluate(() => {
+    for (let i = 0; i < 5; i++) document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', repeat: i > 0, bubbles: true }));
+  });
+  await page.waitForSelector('.toast-action');
+  await page.waitForTimeout(300);
+  assert((await page.locator('.toast-action').count()) === 1, 'holding Delete deletes one photo, not several');
+  await page.click('.toast-action');
+  await page.waitForFunction(() => /1 of 4/.test(document.querySelector('.viewer-count')?.textContent ?? ''));
+  assert(true, 'undo restores the photo in the viewer');
+  await page.evaluate(() => document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true })));
+  await page.waitForTimeout(300);
+  assert((await page.locator('.toast-action').count()) === 0, 'Backspace no longer deletes');
+
+  console.log('Relabel');
+  await page.waitForFunction(() => !document.querySelector('.pill-count'), null, { timeout: 15000 });
+  const before = await page.locator('.viewer .meta-list').innerText();
+  await page.click('.viewer-info .segmented-item:has-text("OS · Left")');
+  await page.waitForFunction(() => /_OS/.test(document.querySelector('.viewer .meta-list')?.textContent ?? ''), null, { timeout: 10000 });
+  const files2 = await page.evaluate(async () => {
+    const out = [];
+    const walk = async (d, p) => {
+      for await (const [n, e] of d.entries()) e.kind === 'directory' ? await walk(e, p + n + '/') : out.push(p + n);
+    };
+    await walk(await (await navigator.storage.getDirectory()).getDirectoryHandle('Archive'), '');
+    return out;
+  });
+  const oldName = (before.match(/H100234_\d+_\d+_OD[\w.]*\.webp/) || [])[0];
+  assert(oldName && !files2.includes(`FITZGERALD_Eleanor_H100234/${files2[0].split('/')[1]}/${oldName}`), 'old OD-named file is gone from the archive');
+  assert(files2.filter((f) => f.includes('_OS')).length === 4 && !files2.some((f) => f.includes('_OD')), 'relabelled file is renamed to OS in the archive');
+  const manifest = await page.evaluate(async () => {
+    const root = await (await navigator.storage.getDirectory()).getDirectoryHandle('Archive');
+    for await (const [, p] of root.entries()) for await (const [, d] of p.entries()) return JSON.parse(await (await (await d.getFileHandle('visit.json')).getFile()).text());
+  });
+  assert(manifest.images.length === 4 && manifest.images.every((i) => /_OD|_OS/.test(i.file) && (i.file.includes('_OD') ? i.eye === 'OD' : i.eye === 'OS')), 'visit.json matches the file names');
   await page.keyboard.press('Escape');
   await page.keyboard.press('v');
 

@@ -9,7 +9,7 @@
  *         MRN12345_20261103_143212_OS_diffuse.webp
  *         visit.json        ← demographics + per-image metadata
  */
-import { fileExists, getDirPath, readTextFile, writeFile } from './fsaccess';
+import { fileExists, getDirPath, isNotFound, readTextFile, renameFile, writeFile } from './fsaccess';
 import { patientFolderName, withSuffix } from './naming';
 import { techniqueLabel, type Capture, type Patient, type Visit } from './types';
 
@@ -72,11 +72,15 @@ async function updateManifest(
   mutate: (images: ManifestImage[]) => ManifestImage[],
 ): Promise<void> {
   let manifest: Manifest | null = null;
+  // A locked or unreadable manifest throws here, so the capture stays pending and is retried
+  // later, rather than the manifest being rewritten with only this image in it.
   const text = await readTextFile(dir, MANIFEST);
   if (text) {
     try {
       manifest = JSON.parse(text) as Manifest;
     } catch {
+      // Keep whatever was there for a human to look at instead of overwriting it.
+      await writeFile(dir, `${MANIFEST}.${Date.now()}.bak`, text);
       manifest = null;
     }
   }
@@ -120,17 +124,38 @@ export function updateArchivedMetadata(root: FileSystemDirectoryHandle, patient:
   });
 }
 
+/** Rename the archived file so its name matches a new eye / technique label. Returns the new relative path. */
+export function renameArchived(root: FileSystemDirectoryHandle, patient: Patient, visit: Visit, capture: Capture, newFileName: string): Promise<string> {
+  return enqueue(async () => {
+    if (!capture.archivedPath) return '';
+    const segs = capture.archivedPath.split('/');
+    const oldName = segs.pop()!;
+    const dir = await getDirPath(root, segs, false);
+    let name = newFileName;
+    for (let n = 2; name !== oldName && (await fileExists(dir, name)); n++) name = withSuffix(newFileName, n);
+    await renameFile(dir, oldName, name);
+    await updateManifest(dir, patient, visit, (imgs) => imgs.map((i) => (i.file === oldName ? imageEntry(capture, name) : i)));
+    return [...segs, name].join('/');
+  });
+}
+
 export function removeArchived(root: FileSystemDirectoryHandle, patient: Patient, visit: Visit, capture: Capture): Promise<void> {
   return enqueue(async () => {
     if (!capture.archivedPath) return;
     const segs = capture.archivedPath.split('/');
     const file = segs.pop()!;
+    let dir: FileSystemDirectoryHandle;
     try {
-      const dir = await getDirPath(root, segs, false);
-      await dir.removeEntry(file);
-      await updateManifest(dir, patient, visit, (imgs) => imgs.filter((i) => i.file !== file));
+      dir = await getDirPath(root, segs, false);
     } catch (e) {
-      if ((e as DOMException)?.name !== 'NotFoundError') throw e;
+      if (isNotFound(e)) return; // the whole visit folder is gone
+      throw e;
     }
+    try {
+      await dir.removeEntry(file);
+    } catch (e) {
+      if (!isNotFound(e)) throw e; // already deleted by hand: still tidy the manifest
+    }
+    await updateManifest(dir, patient, visit, (imgs) => imgs.filter((i) => i.file !== file));
   });
 }

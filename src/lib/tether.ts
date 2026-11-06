@@ -23,9 +23,21 @@ interface Seen {
   modified: number;
 }
 
+const MAX_ATTEMPTS = 3;
+/** How long a file must be unchanged before it is read (mtime is coarse on FAT/SMB and lags on NTFS). */
+const SETTLE_MS = 1500;
+
+/** True when the data ends with a JPEG end-of-image marker, i.e. the camera has finished writing it. */
+async function looksComplete(file: File): Promise<boolean> {
+  if (!/\.jpe?g$/i.test(file.name) || file.size < 4) return true;
+  const tail = new Uint8Array(await file.slice(file.size - 2).arrayBuffer());
+  return tail[0] === 0xff && tail[1] === 0xd9;
+}
+
 export class FolderWatcher {
   private seen = new Map<string, Seen>();
   private pending = new Map<string, Seen>();
+  private attempts = new Map<string, number>();
   private timer: number | null = null;
   private busy = false;
   private stopped = true;
@@ -85,12 +97,18 @@ export class FolderWatcher {
           this.pending.set(path, sig);
           continue;
         }
+        if (Date.now() - sig.modified < SETTLE_MS || !(await looksComplete(file))) continue;
         this.pending.delete(path);
         this.seen.set(path, sig);
         try {
           await this.events.onFile(file, path, handle, parent);
+          this.attempts.delete(path);
         } catch (e) {
-          this.events.onError?.(e);
+          // Try again on the next polls (the file may still have been mid-write); give up after a few goes.
+          const n = (this.attempts.get(path) ?? 0) + 1;
+          this.attempts.set(path, n);
+          if (n < MAX_ATTEMPTS) this.seen.delete(path);
+          else this.events.onError?.(e);
         }
       }
     } catch (e) {

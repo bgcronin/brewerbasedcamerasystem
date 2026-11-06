@@ -1,12 +1,13 @@
 import { create } from 'zustand';
-import { archiveCapture, removeArchived, updateArchivedMetadata } from '../lib/archive';
+import { archiveCapture, removeArchived, renameArchived, updateArchivedMetadata } from '../lib/archive';
 import * as db from '../lib/db';
-import { todayISO } from '../lib/dates';
-import { encodeBitmap } from '../lib/encode';
+import { todayISO, toISODate } from '../lib/dates';
+import { encodeBitmap, warmEncoder } from '../lib/encode';
 import { fsSupported, hasPermission, pickDirectory, requestPermission } from '../lib/fsaccess';
 import { uid } from '../lib/id';
+import { displayName } from '../lib/names';
 import type { ImportedRecord, ImportResult } from '../lib/importers';
-import { captureFileName } from '../lib/naming';
+import { captureFileName, patientFolderName } from '../lib/naming';
 import { playShutter } from '../lib/sound';
 import { FolderWatcher } from '../lib/tether';
 import { forgetThumb, primeThumb } from '../lib/thumbs';
@@ -80,6 +81,8 @@ interface AppState {
   archive: FolderState & { pending: number };
   tether: FolderState & { watching: boolean; lastAt?: number };
   held: HeldPhoto[];
+  /** Patient ids in the order the sidebar is showing them (after search / filter), for ↑ ↓. */
+  visiblePatientIds: string[] | null;
   toasts: Toast[];
   sheet: Sheet;
   lightbox: { ids: string[]; index: number } | null;
@@ -105,6 +108,7 @@ const initial: AppState = {
   archive: { status: fsSupported ? 'none' : 'unsupported', pending: 0 },
   tether: { status: fsSupported ? 'none' : 'unsupported', watching: false },
   held: [],
+  visiblePatientIds: null,
   toasts: [],
   sheet: null,
   lightbox: null,
@@ -125,7 +129,11 @@ let rawHintShown = false;
 
 export function toast(t: Omit<Toast, 'id'>): string {
   const id = uid();
-  set((s) => ({ toasts: [...s.toasts.slice(-2), { id, ...t }] }));
+  set((s) => {
+    const withAction = s.toasts.filter((x) => x.action);
+    const plain = s.toasts.filter((x) => !x.action).slice(-2);
+    return { toasts: [...withAction, ...plain, { id, ...t }] };
+  });
   const ms = t.duration ?? (t.action ? 6500 : t.tone === 'error' ? 7000 : t.tone === 'success' ? 2600 : 3200);
   window.setTimeout(() => dismissToast(id), ms);
   return id;
@@ -138,6 +146,7 @@ export function dismissToast(id: string): void {
 /* ───────────────────────── boot ───────────────────────── */
 
 export async function init(): Promise<void> {
+  warmEncoder();
   const saved = await db.kvGet<Partial<Settings>>('settings');
   const settings = { ...DEFAULT_SETTINGS, ...saved, transforms: { ...(saved?.transforms ?? {}) } };
   set({ settings });
@@ -271,11 +280,12 @@ export async function selectPatient(id: string | null): Promise<void> {
 }
 
 export function selectAdjacent(delta: 1 | -1): void {
-  const { rows, activePatientId } = get();
-  if (!rows.length) return;
-  const i = rows.findIndex((r) => r.patient.id === activePatientId);
-  const next = i < 0 ? (delta > 0 ? 0 : rows.length - 1) : Math.min(rows.length - 1, Math.max(0, i + delta));
-  void selectPatient(rows[next].patient.id);
+  const { rows, activePatientId, visiblePatientIds } = get();
+  const ids = visiblePatientIds ?? rows.map((r) => r.patient.id);
+  if (!ids.length) return;
+  const i = ids.indexOf(activePatientId ?? '');
+  const next = i < 0 ? (delta > 0 ? 0 : ids.length - 1) : Math.min(ids.length - 1, Math.max(0, i + delta));
+  void selectPatient(ids[next]);
 }
 
 export async function importToList(records: ImportedRecord[], defaultDate: string, source: string): Promise<void> {
@@ -312,19 +322,25 @@ export interface PatientForm {
 export async function savePatient(form: PatientForm, patientId?: string, visitId?: string): Promise<string> {
   const now = Date.now();
   let patient: Patient;
+  const existingWithMrn = form.mrn ? await db.findPatientByMrn(form.mrn) : undefined;
   if (patientId) {
     const existing = await db.getPatient(patientId);
     if (!existing) throw new Error('Patient not found');
+    if (existingWithMrn && existingWithMrn.id !== patientId) {
+      throw new Error(`${form.mrn} already belongs to ${displayName(existingWithMrn)}. Two patients can’t share an MRN.`);
+    }
     patient = { ...existing, mrn: form.mrn, firstName: form.firstName, lastName: form.lastName, dob: form.dob, sex: form.sex, notes: form.notes };
+  } else if (existingWithMrn) {
+    // Same MRN as a known patient: add the visit to their record rather than renaming them.
+    patient = { ...existingWithMrn, dob: existingWithMrn.dob ?? form.dob, sex: existingWithMrn.sex || form.sex };
+    toast({ message: `${form.mrn} is already ${displayName(existingWithMrn)}`, detail: 'Their existing record was used. Edit it if the details need changing.', duration: 7000 });
   } else {
-    const dupe = form.mrn ? get().allPatients.find((p) => p.mrn && p.mrn.toLowerCase() === form.mrn.toLowerCase()) : undefined;
-    patient = dupe
-      ? { ...dupe, firstName: form.firstName, lastName: form.lastName, dob: form.dob ?? dupe.dob, sex: form.sex || dupe.sex }
-      : { id: uid(), mrn: form.mrn, firstName: form.firstName, lastName: form.lastName, dob: form.dob, sex: form.sex, notes: form.notes, createdAt: now, updatedAt: now };
+    patient = { id: uid(), mrn: form.mrn, firstName: form.firstName, lastName: form.lastName, dob: form.dob, sex: form.sex, notes: form.notes, createdAt: now, updatedAt: now };
   }
   await db.putPatient(patient);
 
-  const visit = visitId ? await db.getVisit(visitId) : await db.ensureVisit(patient.id, get().date, 'manual');
+  // Editing a patient must never add them to a day's list; only adding (or editing a listed visit) touches visits.
+  const visit = visitId ? await db.getVisit(visitId) : !patientId ? await db.ensureVisit(patient.id, get().date, 'manual') : undefined;
   if (visit) await db.putVisit({ ...visit, time: form.time || undefined, clinic: form.clinic || undefined, reason: form.reason || undefined });
 
   await Promise.all([loadRows(), refreshAllPatients()]);
@@ -333,7 +349,7 @@ export async function savePatient(form: PatientForm, patientId?: string, visitId
 }
 
 export async function removeFromList(visitId: string): Promise<void> {
-  const caps = (await db.capturesForDate(get().date)).filter((c) => c.visitId === visitId);
+  const caps = (await db.capturesForDate(get().date)).filter((c) => c.visitId === visitId && !pendingDeletes.has(c.id));
   if (caps.length) {
     toast({ tone: 'warning', message: 'This visit has photos', detail: 'Delete the photos first to remove the patient from the list.' });
     return;
@@ -396,11 +412,11 @@ export async function ingest(input: IngestInput, patientOverride?: Patient): Pro
       !!input.original && settings.keepTetherOriginals && isIdentity(input.transform) && /jpe?g|webp|png/.test(input.original.type || 'image/jpeg');
     const bitmap = input.bitmap ?? (await createImageBitmap(input.original!));
     if (keepOriginal) {
-      const r = await encodeBitmap({ bitmap, transform: input.transform, format: settings.format, quality: settings.quality, thumbSize: 640, thumbOnly: true });
+      const r = await encodeBitmap({ bitmap, transform: input.transform, format: settings.format, quality: settings.quality, thumbSize: 640, thumbOnly: true }, input.original);
       full = input.original!;
       ({ thumb, width, height } = r);
     } else {
-      const r = await encodeBitmap({ bitmap, transform: input.transform, format: settings.format, quality: settings.quality, thumbSize: 640 });
+      const r = await encodeBitmap({ bitmap, transform: input.transform, format: settings.format, quality: settings.quality, thumbSize: 640 }, input.original);
       full = r.full!;
       ({ thumb, width, height } = r);
     }
@@ -438,8 +454,9 @@ export async function ingest(input: IngestInput, patientOverride?: Patient): Pro
 
     if (archiveHandle && get().archive.status === 'connected') {
       try {
-        const path = await archiveCapture(archiveHandle, patient, visit, capture, full);
-        await commitCapture({ ...capture, archivedPath: path });
+        const owner = await pinArchiveFolder(patient);
+        const path = await archiveCapture(archiveHandle, owner, visit, capture, full);
+        await patchCapture(capture.id, { archivedPath: path });
       } catch (e) {
         set((st) => ({ archive: { ...st.archive, status: 'error' } }));
         toast({ tone: 'error', message: 'Couldn’t write to the archive folder', detail: `Saved safely in Lumen. ${(e as Error).message}` });
@@ -457,9 +474,20 @@ export async function ingest(input: IngestInput, patientOverride?: Patient): Pro
   }
 }
 
-async function commitCapture(c: Capture): Promise<void> {
-  await db.putCapture(c);
-  set((st) => ({ captures: st.captures.map((x) => (x.id === c.id ? c : x)) }));
+/** Merge a partial change into the stored record and the visible list (never overwrites a newer edit). */
+async function patchCapture(id: string, patch: Partial<Capture>): Promise<Capture | undefined> {
+  const next = await db.patchCapture(id, patch);
+  if (next) set((st) => ({ captures: st.captures.map((x) => (x.id === id ? next : x)) }));
+  return next;
+}
+
+/** The archive folder is chosen once per patient and then kept, whatever later corrections say. */
+async function pinArchiveFolder(patient: Patient): Promise<Patient> {
+  if (patient.archiveFolder) return patient;
+  const pinned = { ...patient, archiveFolder: patientFolderName(patient) };
+  await db.putPatient(pinned);
+  set((st) => (st.patient?.id === patient.id ? { patient: pinned } : {}));
+  return pinned;
 }
 
 /** Fire the shutter for the live camera. */
@@ -488,7 +516,11 @@ export async function importFiles(files: File[]): Promise<void> {
     return;
   }
   const images = files.filter((f) => /^image\/(jpeg|png|webp)$/.test(f.type) || /\.(jpe?g|png|webp)$/i.test(f.name));
-  for (const f of images) await ingest({ original: f, source: 'file', transform: { rotate: 0, flipH: false, flipV: false }, takenAt: f.lastModified || Date.now() });
+  for (const f of images) {
+    // A file's own timestamp is kept only if it was taken today; older files are filed with the time they were added.
+    const takenToday = f.lastModified && toISODate(new Date(f.lastModified)) === todayISO();
+    await ingest({ original: f, source: 'file', transform: { rotate: 0, flipH: false, flipV: false }, takenAt: takenToday ? f.lastModified : Date.now() });
+  }
   if (images.length) toast({ tone: 'success', message: `${images.length} photo${images.length === 1 ? '' : 's'} added` });
   if (images.length < files.length) toast({ tone: 'warning', message: 'Some files were skipped', detail: 'Only JPEG, PNG and WebP images can be imported.' });
 }
@@ -496,11 +528,22 @@ export async function importFiles(files: File[]): Promise<void> {
 export async function updateCapture(id: string, patch: Partial<Pick<Capture, 'eye' | 'technique' | 'note' | 'starred'>>): Promise<void> {
   const c = get().captures.find((x) => x.id === id) ?? (await db.getCapture(id));
   if (!c) return;
-  const next = { ...c, ...patch };
-  await commitCapture(next);
-  if (archiveHandle && next.archivedPath && get().archive.status === 'connected') {
-    const [patient, visit] = await Promise.all([db.getPatient(next.patientId), db.getVisit(next.visitId)]);
-    if (patient && visit) void updateArchivedMetadata(archiveHandle, patient, visit, next).catch(() => undefined);
+  const [patient, visit] = await Promise.all([db.getPatient(c.patientId), db.getVisit(c.visitId)]);
+  const relabelled = (patch.eye && patch.eye !== c.eye) || (patch.technique !== undefined && patch.technique !== c.technique);
+  const merged = { ...c, ...patch };
+  // The eye and technique are part of the file name, so a relabel renames the file too.
+  const fileName = relabelled && patient ? captureFileName(patient, { takenAt: merged.takenAt, eye: merged.eye, technique: merged.technique }, merged.mime) : merged.fileName;
+  const next = (await patchCapture(id, { ...patch, fileName })) ?? { ...merged, fileName };
+  if (!archiveHandle || !next.archivedPath || get().archive.status !== 'connected' || !patient || !visit) return;
+  try {
+    if (relabelled) {
+      const archivedPath = await renameArchived(archiveHandle, patient, visit, next, fileName);
+      if (archivedPath) await patchCapture(id, { archivedPath });
+    } else {
+      await updateArchivedMetadata(archiveHandle, patient, visit, next);
+    }
+  } catch (e) {
+    toast({ tone: 'warning', message: 'Archive copy not updated', detail: `The change is saved in Lumen. ${(e as Error).message}` });
   }
 }
 
@@ -533,16 +576,50 @@ export function deleteCapture(id: string): void {
   });
 }
 
+interface ArchiveRemoval {
+  capture: Capture;
+  patientId: string;
+  visitId: string;
+}
+
 async function commitDelete(c: Capture): Promise<void> {
   pendingDeletes.delete(c.id);
   await db.deleteCapture(c.id);
   forgetThumb(c.id);
-  if (archiveHandle && c.archivedPath && get().archive.status === 'connected') {
-    const [patient, visit] = await Promise.all([db.getPatient(c.patientId), db.getVisit(c.visitId)]);
-    if (patient && visit) await removeArchived(archiveHandle, patient, visit, c).catch(() => undefined);
+  if (c.archivedPath) {
+    // Remember the file to remove even if the archive folder is unavailable right now.
+    const queued = (await db.kvGet<ArchiveRemoval[]>('archiveRemovals')) ?? [];
+    await db.kvSet('archiveRemovals', [...queued.filter((r) => r.capture.id !== c.id), { capture: c, patientId: c.patientId, visitId: c.visitId }]);
+    await processArchiveRemovals();
   }
   void refreshPending();
 }
+
+async function processArchiveRemovals(): Promise<void> {
+  if (!archiveHandle || get().archive.status !== 'connected') return;
+  const queued = (await db.kvGet<ArchiveRemoval[]>('archiveRemovals')) ?? [];
+  const remaining: ArchiveRemoval[] = [];
+  for (const r of queued) {
+    const [patient, visit] = await Promise.all([db.getPatient(r.patientId), db.getVisit(r.visitId)]);
+    if (!patient || !visit) continue;
+    try {
+      await removeArchived(archiveHandle, patient, visit, r.capture);
+    } catch {
+      remaining.push(r);
+    }
+  }
+  await db.kvSet('archiveRemovals', remaining);
+}
+
+/** Deletes still inside their undo window are committed if the page is closed. */
+function flushPendingDeletes(): void {
+  for (const [id, timer] of pendingDeletes) {
+    window.clearTimeout(timer);
+    pendingDeletes.delete(id);
+    void db.getCapture(id).then((c) => c && commitDelete(c));
+  }
+}
+if (typeof window !== 'undefined') window.addEventListener('pagehide', flushPendingDeletes);
 
 /* ───────────────────────── archive folder ───────────────────────── */
 
@@ -587,8 +664,9 @@ export async function syncArchive(): Promise<void> {
     const [patient, visit, img] = await Promise.all([db.getPatient(c.patientId), db.getVisit(c.visitId), db.getImage(c.id)]);
     if (!patient || !visit || !img) continue;
     try {
-      const path = await archiveCapture(archiveHandle, patient, visit, c, img.full);
-      await commitCapture({ ...c, archivedPath: path });
+      const owner = await pinArchiveFolder(patient);
+      const path = await archiveCapture(archiveHandle, owner, visit, c, img.full);
+      await patchCapture(c.id, { archivedPath: path });
       done++;
     } catch (e) {
       set((s) => ({ archive: { ...s.archive, status: 'error' } }));
@@ -597,6 +675,7 @@ export async function syncArchive(): Promise<void> {
     }
   }
   if (done) toast({ tone: 'success', message: `${done} photo${done === 1 ? '' : 's'} written to the archive` });
+  await processArchiveRemovals();
   await refreshPending();
 }
 

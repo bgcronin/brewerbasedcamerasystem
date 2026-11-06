@@ -54,19 +54,27 @@ export function useThumb(id: string | null | undefined): string | null {
 export function useFullImage(id: string | null | undefined): string | null {
   const [url, setUrl] = useState<string | null>(null);
   useEffect(() => {
-    if (!id) return;
+    if (!id) {
+      setUrl((old) => {
+        if (old) URL.revokeObjectURL(old);
+        return null;
+      });
+      return;
+    }
     let alive = true;
-    let made: string | null = null;
     void getImage(id).then((img) => {
       if (!alive || !img) return;
-      made = URL.createObjectURL(img.full);
-      setUrl(made);
+      const made = URL.createObjectURL(img.full);
+      // Swap only once the new image exists, so stepping between photos never shows a blank.
+      setUrl((old) => {
+        if (old) URL.revokeObjectURL(old);
+        return made;
+      });
     });
     return () => {
       alive = false;
-      if (made) URL.revokeObjectURL(made);
-      setUrl(null);
     };
   }, [id]);
+  useEffect(() => () => setUrl((old) => (old && URL.revokeObjectURL(old), null)), []);
   return url;
 }

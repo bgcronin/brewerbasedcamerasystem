@@ -43,8 +43,11 @@ function expandYear(y: number, pivotToPast: boolean): number {
   return full;
 }
 
-/** Guess the day/month order used by a column of date strings. */
-export function inferDateOrder(values: string[], fallback: DateOrderResolved = localeDateOrder()): DateOrderResolved {
+/** Guess the day/month order used by a column of date strings, with the vote counts so callers can tell an ambiguous column. */
+export function inferDateOrderDetailed(
+  values: string[],
+  fallback: DateOrderResolved = 'DMY',
+): { order: DateOrderResolved; votes: { dmy: number; mdy: number } } {
   let dmy = 0;
   let mdy = 0;
   for (const v of values) {
@@ -55,14 +58,13 @@ export function inferDateOrder(values: string[], fallback: DateOrderResolved = l
     if (a > 12 && b <= 12) dmy++;
     else if (b > 12 && a <= 12) mdy++;
   }
-  if (dmy > mdy) return 'DMY';
-  if (mdy > dmy) return 'MDY';
-  return fallback;
+  const order: DateOrderResolved = dmy > mdy ? 'DMY' : mdy > dmy ? 'MDY' : fallback;
+  return { order, votes: { dmy, mdy } };
 }
 
-export function localeDateOrder(): DateOrderResolved {
-  const lang = (typeof navigator !== 'undefined' && navigator.language) || 'en-GB';
-  return /^en-(US|PH)|^es-US/i.test(lang) ? 'MDY' : 'DMY';
+/** UK/Irish clinics: when the data cannot decide, assume day first. */
+export function inferDateOrder(values: string[], fallback: DateOrderResolved = 'DMY'): DateOrderResolved {
+  return inferDateOrderDetailed(values, fallback).order;
 }
 
 /**
@@ -119,10 +121,12 @@ export function parseDate(raw: string | undefined, order: DateOrderResolved = 'D
     if (mo && validYMD(y, mo, d)) return `${y}-${pad(mo)}-${pad(d)}`;
   }
 
-  // Excel serial day numbers (days since 1899-12-30).
-  if (/^\d{5}(\.\d+)?$/.test(s)) {
+  // Excel serial day numbers (days since 1899-12-30). A bare four-digit value is a year, not a date,
+  // unless it is a birth date below 1900 where no plausible year exists.
+  if (/^\d{4,5}(\.\d+)?$/.test(s)) {
     const serial = Math.floor(Number(s));
-    if (serial > 1000 && serial < 80000) {
+    const plausible = serial >= 10000 ? serial < 80000 : isBirthDate && serial < 1900;
+    if (serial > 1000 && plausible) {
       const base = new Date(1899, 11, 30);
       base.setDate(base.getDate() + serial);
       return toISODate(base);

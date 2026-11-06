@@ -11,6 +11,8 @@ export interface Patient {
   dob?: string;
   sex?: 'M' | 'F' | 'O' | '';
   notes?: string;
+  /** Archive folder name fixed on first write, so later corrections never split a patient's history. */
+  archiveFolder?: string;
   createdAt: number;
   updatedAt: number;
 }

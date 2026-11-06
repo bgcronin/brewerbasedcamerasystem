@@ -44,7 +44,7 @@ export function CompareView() {
   useEffect(() => {
     if (!pair) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') closeCompare();
+      if (e.key === 'Escape' && !e.repeat) closeCompare();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);

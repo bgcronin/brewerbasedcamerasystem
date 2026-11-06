@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { detectDelimiter, parseDelimited } from '../src/lib/csv';
-import { inferDateOrder, parseDate, parseTime, ageFromDOB } from '../src/lib/dates';
-import { applyMapping, detectMapping, guessMappingFromValues, looksLikeHeader } from '../src/lib/importers';
+import { inferDateOrder, inferDateOrderDetailed, parseDate, parseTime, ageFromDOB } from '../src/lib/dates';
+import { applyMapping, detectMapping, guessMappingFromValues, looksLikeHeader, readText } from '../src/lib/importers';
 import { displayName, normaliseSex, splitFullName, titleCase } from '../src/lib/names';
 
 describe('csv', () => {
@@ -24,6 +24,14 @@ describe('csv', () => {
     expect(detectDelimiter('a;b;c\n1;2;3')).toBe(';');
     expect(detectDelimiter('Name\tMRN\tDOB\nSmith, J\t123\t01/02/1950')).toBe('\t');
     expect(detectDelimiter('"Smith; J",1,2\n"Jones; K",3,4')).toBe(',');
+  });
+
+  it('prefers a tab over a comma when both appear once per line (Excel paste)', () => {
+    expect(detectDelimiter('SMITH, John\t12/03/1956')).toBe('\t');
+    expect(parseDelimited('SMITH, John\t12/03/1956\nBYRNE, Aoife\t30/07/1988')).toEqual([
+      ['SMITH, John', '12/03/1956'],
+      ['BYRNE, Aoife', '30/07/1988'],
+    ]);
   });
 });
 
@@ -51,8 +59,24 @@ describe('dates', () => {
   });
 
   it('infers day/month order from the data', () => {
-    expect(inferDateOrder(['01/02/1950', '25/02/1960'])).toBe('DMY');
-    expect(inferDateOrder(['02/25/1960', '01/02/1950'])).toBe('MDY');
+    expect(inferDateOrder(['01/02/1950', '25/02/1960'], 'MDY')).toBe('DMY');
+    expect(inferDateOrder(['02/25/1960', '01/02/1950'], 'DMY')).toBe('MDY');
+  });
+
+  it('falls back to day-first when no value decides, unless told otherwise', () => {
+    expect(inferDateOrder(['01/02/1950', '03/04/1960'])).toBe('DMY');
+    expect(inferDateOrder(['01/02/1950'], 'MDY')).toBe('MDY');
+    expect(inferDateOrder([])).toBe('DMY');
+    expect(inferDateOrderDetailed(['01/02/1950', '25/02/1960'])).toEqual({ order: 'DMY', votes: { dmy: 1, mdy: 0 } });
+    expect(inferDateOrderDetailed(['01/02/1950']).votes).toEqual({ dmy: 0, mdy: 0 });
+  });
+
+  it('treats a bare four-digit value as a year, not an Excel serial', () => {
+    expect(parseDate('1956', 'DMY', true)).toBeUndefined();
+    expect(parseDate('2026')).toBeUndefined();
+    expect(parseDate('1234', 'DMY', true)).toBe('1903-05-18');
+    expect(parseDate('1234')).toBeUndefined();
+    expect(parseDate('44927')).toBe('2023-01-01');
   });
 
   it('parses times', () => {
@@ -81,6 +105,18 @@ describe('names', () => {
     expect(splitFullName("O'BRIEN Mary")).toEqual({ lastName: "O'Brien", firstName: 'Mary' });
     expect(splitFullName('Anne-Marie van der Berg')).toEqual({ firstName: 'Anne-Marie', lastName: 'van der Berg' });
     expect(splitFullName('MCDONALD, SEAN (Mr)')).toEqual({ lastName: 'McDonald', firstName: 'Sean' });
+  });
+
+  it('reads two all-caps tokens as surname first', () => {
+    expect(splitFullName('SMITH JOHN')).toEqual({ lastName: 'Smith', firstName: 'John' });
+    expect(splitFullName('JOHN PAUL SMITH')).toEqual({ firstName: 'John Paul', lastName: 'Smith' });
+    expect(splitFullName('Smith')).toEqual({ firstName: '', lastName: 'Smith' });
+  });
+
+  it('drops a trailing title after a comma', () => {
+    expect(splitFullName('Smith, John, Mr')).toEqual({ lastName: 'Smith', firstName: 'John' });
+    expect(splitFullName('SMITH, JOHN, MRS.')).toEqual({ lastName: 'Smith', firstName: 'John' });
+    expect(splitFullName('SMITH, J.')).toEqual({ lastName: 'Smith', firstName: 'J.' });
   });
 
   it('title-cases and displays names clinically', () => {
@@ -112,12 +148,35 @@ describe('column mapping', () => {
     expect(looksLikeHeader(['09:00', 'MRN100234', 'Smith, John', '12/03/1956'])).toBe(false);
   });
 
+  it('does not read "Last Visit" as a surname column', () => {
+    expect(detectMapping(['Last Visit', 'Name', 'Hospital No'])).toEqual(['ignore', 'fullName', 'mrn']);
+    expect(detectMapping(['Last Seen', 'First Attended', 'Surname', 'First Name'])).toEqual(['ignore', 'ignore', 'lastName', 'firstName']);
+  });
+
   it('guesses columns when there is no header row', () => {
     const rows = [
       ['09:00', 'H100234', 'SMITH, John', '12/03/1956'],
       ['09:15', 'H100877', 'BYRNE, Aoife', '30/07/1988'],
     ];
     expect(guessMappingFromValues(rows)).toEqual(['time', 'mrn', 'fullName', 'dob']);
+  });
+
+  it('guesses bare-number MRNs and split name columns without a header row', () => {
+    expect(guessMappingFromValues([
+      ['10234', 'SMITH', 'John', '12/03/1956'],
+      ['10877', 'BYRNE', 'Aoife', '30/07/1988'],
+    ])).toEqual(['mrn', 'lastName', 'firstName', 'dob']);
+    expect(guessMappingFromValues([
+      ['John', 'Smith', '20261103'],
+      ['Aoife', 'Byrne', '20261104'],
+    ])).toEqual(['firstName', 'lastName', 'mrn']);
+  });
+
+  it('gives the older of two date columns to date of birth', () => {
+    expect(guessMappingFromValues([
+      ['03/11/2026', 'SMITH, John', '12/03/1956'],
+      ['03/11/2026', 'BYRNE, Aoife', '30/07/1988'],
+    ])).toEqual(['date', 'fullName', 'dob']);
   });
 
   it('turns rows into records', () => {
@@ -134,5 +193,39 @@ describe('column mapping', () => {
     expect(dateOrder).toBe('DMY');
     expect(records[0]).toMatchObject({ mrn: 'H100234', lastName: 'Smith', firstName: 'John', dob: '1956-03-12', time: '09:00', sex: 'M' });
     expect(records[1]).toMatchObject({ lastName: 'Byrne', firstName: 'Aoife', dob: '1988-07-30', time: '14:30', sex: 'F' });
+  });
+
+  it('flags an ambiguous day/month order and assumes day first', () => {
+    const rows = [['SMITH, John', '01/02/1950'], ['BYRNE, Aoife', '03/04/1988']];
+    const auto = applyMapping(rows, ['fullName', 'dob'], 'auto');
+    expect(auto.dateOrder).toBe('DMY');
+    expect(auto.dateOrderAmbiguous).toBe(true);
+    expect(auto.records[0].dob).toBe('1950-02-01');
+    expect(applyMapping(rows, ['fullName', 'dob'], 'MDY')).toMatchObject({ dateOrderAmbiguous: false, dateOrder: 'MDY' });
+    expect(applyMapping([['SMITH, John', '25/02/1950']], ['fullName', 'dob'], 'auto').dateOrderAmbiguous).toBe(false);
+    expect(applyMapping([['SMITH, John', '1950-02-25']], ['fullName', 'dob'], 'auto').dateOrderAmbiguous).toBe(false);
+  });
+});
+
+describe('file decoding', () => {
+  const utf16le = (text: string, bom = true) => {
+    const units = [...(bom ? '\ufeff' : ''), ...text].map((c) => c.charCodeAt(0));
+    return new Uint8Array(units.flatMap((u) => [u & 0xff, u >> 8]));
+  };
+  const file = (bytes: Uint8Array<ArrayBuffer>) => new File([bytes], 'list.csv', { type: 'text/csv' });
+
+  it('decodes UTF-16LE with a BOM', async () => {
+    expect(await readText(file(utf16le('Name,DOB\nSMITH, John,12/03/1956')))).toBe('Name,DOB\nSMITH, John,12/03/1956');
+  });
+
+  it('decodes UTF-16 without a BOM and big-endian with one', async () => {
+    expect(await readText(file(utf16le('Name\tDOB\nSMITH\t12/03/1956', false)))).toBe('Name\tDOB\nSMITH\t12/03/1956');
+    const be = new Uint8Array([0xfe, 0xff, 0x00, 0x41, 0x00, 0x2c, 0x00, 0x42]);
+    expect(await readText(file(be))).toBe('A,B');
+  });
+
+  it('still reads UTF-8 and falls back to Windows-1252', async () => {
+    expect(await readText(file(new TextEncoder().encode('Ó Briain,1')))).toBe('Ó Briain,1');
+    expect(await readText(file(new Uint8Array([0xd3, 0x20, 0x42, 0x72, 0x69, 0x61, 0x69, 0x6e])))).toBe('Ó Briain');
   });
 });

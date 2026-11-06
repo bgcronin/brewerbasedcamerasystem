@@ -129,6 +129,11 @@ export function Worklist() {
     return allPatients.filter((p) => !listed.has(p.id) && matches(p, query)).slice(0, 25);
   }, [allPatients, rows, query]);
 
+  useEffect(() => {
+    useApp.setState({ visiblePatientIds: [...visible.map((r) => r.patient.id), ...others.map((p) => p.id)] });
+    return () => useApp.setState({ visiblePatientIds: null });
+  }, [visible, others]);
+
   const done = rows.filter((r) => r.count > 0).length;
   const isToday = date === todayISO();
 

@@ -34,6 +34,7 @@ export interface ZipEntry {
 }
 
 export async function buildZip(entries: ZipEntry[], onProgress?: (done: number, total: number) => void): Promise<Blob> {
+  if (entries.length > 65535) throw new Error('Too many files for one ZIP — export fewer visits at a time.');
   const enc = new TextEncoder();
   const parts: BlobPart[] = [];
   const central: Uint8Array[] = [];

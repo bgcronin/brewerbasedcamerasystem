@@ -31,6 +31,7 @@ interface CameraState {
 }
 
 let lastResolution = 'auto';
+let startGeneration = 0;
 
 export const useCamera = create<CameraState>((set, get) => ({
   devices: [],
@@ -70,10 +71,16 @@ export const useCamera = create<CameraState>((set, get) => ({
       return false;
     }
     lastResolution = resolution;
+    const generation = ++startGeneration;
     get().stop();
     set({ status: 'starting', error: undefined, wantedDeviceId: deviceId });
     try {
       const stream = await openCamera(deviceId, resolution);
+      if (generation !== startGeneration) {
+        // A newer start() won; release this stream so the device isn't left busy.
+        stream.getTracks().forEach((t) => t.stop());
+        return false;
+      }
       const track = stream.getVideoTracks()[0];
       const settings = track.getSettings();
       track.addEventListener('ended', () => {
@@ -98,7 +105,7 @@ export const useCamera = create<CameraState>((set, get) => ({
       }
       return true;
     } catch (e) {
-      set({ status: 'error', error: describeCameraError(e), stream: null, info: null });
+      if (generation === startGeneration) set({ status: 'error', error: describeCameraError(e), stream: null, info: null });
       return false;
     }
   },

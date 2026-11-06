@@ -4,6 +4,7 @@
  */
 import { create } from 'zustand';
 import { playShutter } from '../lib/sound';
+import { displayName } from '../lib/names';
 import { techniqueLabel, type CameraValues, type Eye, type Patient } from '../lib/types';
 import { fileHeldPhoto, holdPhoto, ingest, setTechnique, toast, transformFor, updateSettings, useApp } from './store';
 
@@ -88,7 +89,13 @@ export function stopLink(): void {
   useCanon.setState({ link: 'off', liveView: false });
 }
 
+/** "Try again": ask the helper to re-open the camera if it's reachable, otherwise re-open the link itself. */
 export function reconnectLink(): void {
+  const c = useCanon.getState();
+  if (c.link === 'online' && ws?.readyState === WebSocket.OPEN) {
+    void request('reconnect').catch(() => undefined);
+    return;
+  }
   ws?.close();
   ws = null;
   retryDelay = 1000;
@@ -119,7 +126,8 @@ function connect() {
     else onBinary(e.data as ArrayBuffer);
   };
   sock.onclose = () => {
-    if (ws === sock) ws = null;
+    if (ws !== sock) return; // an older socket closing late must not disturb the current one
+    ws = null;
     for (const [, p] of pending) {
       window.clearTimeout(p.timer);
       p.reject(new Error('Lumen Camera Link is not running.'));
@@ -202,7 +210,7 @@ function onText(msg: Record<string, unknown>) {
     }
     case 'capture-failed': {
       const id = msg.requestId as string | undefined;
-      if (id) captures.delete(id);
+      if (id) retireCapture(id);
       toast({ tone: 'error', message: 'Photo not taken', detail: msg.message as string });
       break;
     }
@@ -257,6 +265,17 @@ interface Snapshot {
   technique: string | null;
 }
 const captures = new Map<string, Snapshot>();
+/** Snapshots of captures that timed out, kept a while in case the photo still turns up. */
+const lateCaptures = new Map<string, Snapshot & { failedAt: number }>();
+const LATE_GRACE_MS = 90_000;
+
+function retireCapture(id: string): void {
+  const snap = captures.get(id);
+  if (!snap) return;
+  captures.delete(id);
+  lateCaptures.set(id, { ...snap, failedAt: Date.now() });
+  for (const [k, v] of lateCaptures) if (Date.now() - v.failedAt > LATE_GRACE_MS) lateCaptures.delete(k);
+}
 
 interface PhotoHeader {
   requestId?: string;
@@ -272,14 +291,20 @@ function deviceLabel(): string {
 async function onPhoto(h: PhotoHeader, blob: Blob) {
   const file = new File([blob], h.name, { type: 'image/jpeg', lastModified: h.takenAt });
   const snap = h.requestId ? captures.get(h.requestId) : undefined;
-  if (h.requestId) captures.delete(h.requestId);
+  const late = !snap && h.requestId ? lateCaptures.get(h.requestId) : undefined;
+  if (h.requestId) {
+    captures.delete(h.requestId);
+    lateCaptures.delete(h.requestId);
+  }
   const label = deviceLabel();
-  if (snap) {
+  const filed = snap ?? late;
+  if (filed) {
     // Taken from Lumen: file it exactly as it was labelled at the moment of the shutter press.
     await ingest(
-      { original: file, source: 'canon', deviceLabel: label, transform: transformFor(label), takenAt: h.takenAt, eye: snap.eye, technique: snap.technique, exposure: h.exposure },
-      snap.patient,
+      { original: file, source: 'canon', deviceLabel: label, transform: transformFor(label), takenAt: h.takenAt, eye: filed.eye, technique: filed.technique, exposure: h.exposure },
+      filed.patient,
     );
+    if (late) toast({ tone: 'success', message: 'The photo arrived after all', detail: `Filed to ${displayName(late.patient)} · ${late.eye}.`, duration: 7000 });
     return;
   }
   // Taken with the camera's own shutter button or remote.
@@ -315,7 +340,7 @@ export async function canonShutter(): Promise<void> {
   try {
     await request('capture', { captureId: id }, 15_000);
   } catch (e) {
-    captures.delete(id);
+    retireCapture(id);
     toast({ tone: 'error', message: 'Photo not taken', detail: (e as Error).message });
   }
 }

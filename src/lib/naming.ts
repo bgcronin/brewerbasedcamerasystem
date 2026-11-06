@@ -10,9 +10,10 @@ export function safeSegment(raw: string, fallback = 'untitled'): string {
     .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '')
     .replace(/\s+/g, ' ')
     .trim()
+    .slice(0, 80)
     .replace(/[. ]+$/, '');
   if (!s || RESERVED.test(s)) s = fallback;
-  return s.slice(0, 80);
+  return s;
 }
 
 export function extensionFor(mime: string): string {
@@ -32,8 +33,9 @@ export function formatLabel(f: ImageFormat): string {
   return { 'image/webp': 'WebP', 'image/jpeg': 'JPEG', 'image/png': 'PNG' }[f];
 }
 
-/** Folder for a patient: "SMITH_John_MRN12345". Stable across visits so history stays together. */
-export function patientFolderName(p: Pick<Patient, 'firstName' | 'lastName' | 'mrn'>): string {
+/** Folder for a patient: "SMITH_John_MRN12345". Fixed on first use so history stays together. */
+export function patientFolderName(p: Pick<Patient, 'firstName' | 'lastName' | 'mrn' | 'archiveFolder'>): string {
+  if (p.archiveFolder) return p.archiveFolder;
   const parts = [p.lastName.toUpperCase(), p.firstName, p.mrn].map((x) => (x ?? '').trim()).filter(Boolean);
   return safeSegment(parts.join('_').replace(/\s+/g, '-'), 'Unnamed');
 }

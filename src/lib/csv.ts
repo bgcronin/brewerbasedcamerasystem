@@ -4,7 +4,8 @@
  * quoted line breaks, ragged rows and trailing blank lines).
  */
 
-const CANDIDATES = [',', ';', '\t', '|'] as const;
+// Checked in order; on a tied score the earlier one wins, so an Excel paste like "SMITH, John\t12/03/1956" splits on the tab.
+const CANDIDATES = ['\t', ';', '|', ','] as const;
 
 export function stripBom(text: string): string {
   return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;

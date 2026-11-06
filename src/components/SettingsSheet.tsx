@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { fsSupported } from '../lib/fsaccess';
 import { formatBytes } from '../lib/naming';
 import { TECHNIQUES, type DateOrder, type ImageFormat, type ThemePref } from '../lib/types';
-import { describeValues, removePreset } from '../state/canon';
+import { describeValues, reconnectLink, removePreset } from '../state/canon';
 import {
   chooseArchiveFolder,
   closeSheet,
@@ -41,7 +41,7 @@ function KeyBinder() {
     if (!listening) return;
     const onKey = (e: KeyboardEvent) => {
       e.preventDefault();
-      e.stopPropagation();
+      e.stopImmediatePropagation(); // the Settings sheet also listens for Escape on window
       if (e.key !== 'Escape' && !keys.includes(e.code)) void updateSettings({ captureKeys: [...keys, e.code] });
       setListening(false);
     };
@@ -73,10 +73,12 @@ export function SettingsSheet() {
   const archive = useApp((s) => s.archive);
   const [usage, setUsage] = useState<{ used: number; quota: number; persisted: boolean } | null>(null);
   const [clinic, setClinic] = useState(settings.clinicName);
+  const [linkUrl, setLinkUrl] = useState(settings.cameraLinkUrl);
 
   useEffect(() => {
     if (!open) return;
     setClinic(settings.clinicName);
+    setLinkUrl(settings.cameraLinkUrl);
     void (async () => {
       const est = await navigator.storage?.estimate?.();
       const persisted = (await navigator.storage?.persisted?.()) ?? false;
@@ -248,10 +250,15 @@ export function SettingsSheet() {
             <Row title="Camera Link address" detail="Leave blank unless Camera Link runs on a different port.">
               <input
                 className="input input-sm"
-                value={settings.cameraLinkUrl}
+                value={linkUrl}
                 placeholder="ws://127.0.0.1:47800/camera"
                 spellCheck={false}
-                onChange={(e) => void updateSettings({ cameraLinkUrl: e.target.value.trim() })}
+                onChange={(e) => setLinkUrl(e.target.value)}
+                onBlur={() => {
+                  const next = linkUrl.trim();
+                  if (next === settings.cameraLinkUrl) return;
+                  void updateSettings({ cameraLinkUrl: next }).then(() => settings.source === 'canon' && reconnectLink());
+                }}
               />
             </Row>
           </div>

@@ -89,12 +89,20 @@ export function onGlobalKeyDown(e: KeyboardEvent): void {
     if (!e.repeat && s.view === 'capture') shutter();
     return;
   }
+  // Holding a key must not toggle things repeatedly (arrow keys may repeat to scroll the list).
+  const arrow = e.key === 'ArrowUp' || e.key === 'ArrowDown';
+  if (e.repeat && !arrow) return;
 
   const key = e.key.toLowerCase();
-  const n = Number(e.key);
+  const digit = e.code.match(/^(?:Digit|Numpad)([1-9])$/);
+  const n = digit ? Number(digit[1]) : NaN;
   if (n >= 1 && n <= TECHNIQUES.length) {
     const id = TECHNIQUES[n - 1].id;
     chooseTechnique(s.technique === id ? null : id);
+    return;
+  }
+  if (e.code === 'Digit0' || e.code === 'Numpad0') {
+    chooseTechnique(null);
     return;
   }
   switch (key) {
@@ -106,9 +114,6 @@ export function onGlobalKeyDown(e: KeyboardEvent): void {
       break;
     case 'b':
       setEye('OU');
-      break;
-    case '0':
-      chooseTechnique(null);
       break;
     case 'arrowdown':
     case 'j':
@@ -142,6 +147,6 @@ export function onGlobalKeyDown(e: KeyboardEvent): void {
 /** Stop Space from also "clicking" whichever button has focus. */
 export function onGlobalKeyUp(e: KeyboardEvent): void {
   const s = useApp.getState();
-  if (document.querySelector('[data-modal]') || isTyping(e.target)) return;
+  if (document.querySelector('[data-modal]') || s.lightbox || s.compare || isTyping(e.target)) return;
   if (s.settings.captureKeys.includes(e.code)) e.preventDefault();
 }

@@ -94,14 +94,49 @@ export async function allPatients(): Promise<Patient[]> {
   return (await db()).getAll('patients');
 }
 
+/** MRNs compare without case or spacing: "123 456 7890" and "1234567890" are the same number. */
+export function normaliseMrn(mrn: string | undefined): string {
+  return (mrn ?? '').replace(/\s+/g, '').toLowerCase();
+}
+
+function nameDobKey(p: { firstName: string; lastName: string; dob?: string }): string {
+  const clean = (s: string) => s.trim().replace(/\s+/g, ' ').toLowerCase();
+  return `${clean(p.lastName)}|${clean(p.firstName)}|${p.dob ?? ''}`;
+}
+
+export async function findPatientByMrn(mrn: string): Promise<Patient | undefined> {
+  const key = normaliseMrn(mrn);
+  if (!key) return undefined;
+  const all = await allPatients();
+  return all.find((p) => normaliseMrn(p.mrn) === key);
+}
+
+// Concurrent captures (a burst, or a tethered file landing as Space is pressed)
+// must share one visit, so look-up and insert happen in one transaction and
+// callers for the same patient/day share one in-flight promise.
+const visitInFlight = new Map<string, Promise<Visit>>();
+
 /** Find or create today's (or any day's) visit for a patient. */
-export async function ensureVisit(patientId: string, date: string, source = 'capture'): Promise<Visit> {
-  const d = await db();
-  const existing = await d.getFromIndex('visits', 'patientDate', [patientId, date]);
-  if (existing) return existing;
-  const v: Visit = { id: uid(), patientId, date, source, createdAt: Date.now() };
-  await d.put('visits', v);
-  return v;
+export function ensureVisit(patientId: string, date: string, source = 'capture'): Promise<Visit> {
+  const key = `${patientId}|${date}`;
+  let p = visitInFlight.get(key);
+  if (!p) {
+    p = (async () => {
+      const d = await db();
+      const tx = d.transaction('visits', 'readwrite');
+      const existing = await tx.store.index('patientDate').get([patientId, date]);
+      if (existing) {
+        await tx.done;
+        return existing;
+      }
+      const v: Visit = { id: uid(), patientId, date, source, createdAt: Date.now() };
+      await tx.store.put(v);
+      await tx.done;
+      return v;
+    })().finally(() => visitInFlight.delete(key));
+    visitInFlight.set(key, p);
+  }
+  return p;
 }
 
 export interface ImportSummary {
@@ -123,17 +158,20 @@ export async function importRecords(records: ImportedRecord[], defaultDate: stri
   const patients = tx.objectStore('patients');
   const visits = tx.objectStore('visits');
   const all = await patients.getAll();
-  const byMrn = new Map(all.filter((p) => p.mrn).map((p) => [p.mrn.toLowerCase(), p]));
-  const byNameDob = new Map(all.map((p) => [`${p.lastName}|${p.firstName}|${p.dob ?? ''}`.toLowerCase(), p]));
+  const byMrn = new Map(all.filter((p) => normaliseMrn(p.mrn)).map((p) => [normaliseMrn(p.mrn), p]));
+  const byNameDob = new Map(all.map((p) => [nameDobKey(p), p]));
   const summary: ImportSummary = { added: 0, updated: 0, listed: 0, alreadyListed: 0, dates: [] };
   const dates = new Set<string>();
   const now = Date.now();
 
+  const seenThisImport = new Set<string>();
+
   for (const r of records) {
-    const key = `${r.lastName}|${r.firstName}|${r.dob ?? ''}`.toLowerCase();
+    const key = nameDobKey(r);
+    const mrnKey = normaliseMrn(r.mrn);
     const nameMatch = byNameDob.get(key);
     // Match on MRN first; fall back to name + DOB only when one side has no MRN to compare.
-    let p = (r.mrn && byMrn.get(r.mrn.toLowerCase())) || (nameMatch && (!r.mrn || !nameMatch.mrn) ? nameMatch : undefined);
+    let p = (mrnKey && byMrn.get(mrnKey)) || (nameMatch && (!mrnKey || !normaliseMrn(nameMatch.mrn)) ? nameMatch : undefined);
     if (p) {
       const merged: Patient = {
         ...p,
@@ -146,7 +184,10 @@ export async function importRecords(records: ImportedRecord[], defaultDate: stri
       };
       await patients.put(merged);
       p = merged;
-      summary.updated++;
+      // Keep the look-ups current so a second row for the same person matches too.
+      if (normaliseMrn(p.mrn)) byMrn.set(normaliseMrn(p.mrn), p);
+      byNameDob.set(nameDobKey(p), p);
+      if (!seenThisImport.has(p.id)) summary.updated++;
     } else {
       p = {
         id: uid(),
@@ -160,10 +201,11 @@ export async function importRecords(records: ImportedRecord[], defaultDate: stri
         updatedAt: now,
       };
       await patients.put(p);
-      if (p.mrn) byMrn.set(p.mrn.toLowerCase(), p);
+      if (normaliseMrn(p.mrn)) byMrn.set(normaliseMrn(p.mrn), p);
       byNameDob.set(key, p);
       summary.added++;
     }
+    seenThisImport.add(p.id);
 
     const date = r.date ?? defaultDate;
     dates.add(date);
@@ -209,6 +251,21 @@ export async function addCapture(c: Capture, img: StoredImage): Promise<void> {
 
 export async function putCapture(c: Capture): Promise<void> {
   await (await db()).put('captures', c);
+}
+
+/** Apply a partial update to the stored record, so a slow archive write can't overwrite a newer edit. */
+export async function patchCapture(id: string, patch: Partial<Capture>): Promise<Capture | undefined> {
+  const d = await db();
+  const tx = d.transaction('captures', 'readwrite');
+  const current = await tx.store.get(id);
+  if (!current) {
+    await tx.done;
+    return undefined;
+  }
+  const next = { ...current, ...patch };
+  await tx.store.put(next);
+  await tx.done;
+  return next;
 }
 
 export async function getCapture(id: string): Promise<Capture | undefined> {

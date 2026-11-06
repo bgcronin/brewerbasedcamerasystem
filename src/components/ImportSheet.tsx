@@ -97,7 +97,7 @@ function MapColumns({ result, onBack }: { result: Extract<ImportResult, { kind: 
   const width = Math.max(0, ...rows.map((r) => r.length));
   const [hasHeader, setHasHeader] = useState(() => rows.length > 0 && looksLikeHeader(rows[0]));
   const headers = hasHeader ? rows[0] : Array.from({ length: width }, (_, i) => `Column ${i + 1}`);
-  const dataRows = hasHeader ? rows.slice(1) : rows;
+  const dataRows = useMemo(() => (hasHeader ? rows.slice(1) : rows), [rows, hasHeader]);
   const [mapping, setMapping] = useState<PatientField[]>(() => (hasHeader ? detectMapping(rows[0]) : guessMappingFromValues(rows)));
   const [order, setOrder] = useState<'auto' | DateOrderResolved>(datePref);
   const [listDate, setListDate] = useState(viewDate || todayISO());
@@ -235,6 +235,11 @@ function MapColumns({ result, onBack }: { result: Extract<ImportResult, { kind: 
             <Icon name="alert" size={15} /> Choose which column holds the patient’s name.
           </p>
         )}
+        {hasName && mapped.dateOrderAmbiguous && (
+          <p className="import-warning">
+            <Icon name="alert" size={15} /> Couldn’t tell DD/MM from MM/DD in this file — it’s being read as day first. Check a date of birth in the preview, or set the format above.
+          </p>
+        )}
         {hasName && !hasMrn && (
           <p className="import-note">
             <Icon name="info" size={15} /> No patient ID column — patients will be matched across days by name and date of birth.
@@ -259,20 +264,25 @@ export function ImportSheet() {
   const sheet = useApp((s) => s.sheet);
   const open = sheet?.type === 'import';
   const [result, setResult] = useState<ImportResult | undefined>();
+  const [nonce, setNonce] = useState(0);
 
   useEffect(() => {
-    if (open) setResult(sheet.result);
+    setResult(open ? sheet.result : undefined);
+    if (open) setNonce((n) => n + 1);
   }, [open, sheet]);
 
   const onResult = (r: ImportResult) => {
     if (r.kind === 'records') {
-      void importToList(r.records, useApp.getState().date, 'import').then(closeSheet);
+      importToList(r.records, useApp.getState().date, 'import')
+        .then(closeSheet)
+        .catch((e: Error) => toast({ tone: 'error', message: 'Import failed', detail: e.message }));
       return;
     }
     if (!r.table.rows.length) {
       toast({ tone: 'warning', message: 'That list looks empty' });
       return;
     }
+    setNonce((n) => n + 1);
     setResult(r);
   };
 
@@ -284,7 +294,7 @@ export function ImportSheet() {
         subtitle={result ? 'Check that each column is matched to the right field.' : 'Bring in the day’s patients from your PAS or EMR export.'}
         onClose={closeSheet}
       />
-      {result?.kind === 'table' ? <MapColumns key={result.sourceName + result.table.rows.length} result={result} onBack={() => setResult(undefined)} /> : <ChooseSource onResult={onResult} />}
+      {result?.kind === 'table' ? <MapColumns key={nonce} result={result} onBack={() => setResult(undefined)} /> : <ChooseSource onResult={onResult} />}
     </Modal>
   );
 }

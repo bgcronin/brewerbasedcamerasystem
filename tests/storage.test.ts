@@ -63,3 +63,44 @@ describe('database import', () => {
     expect(await db.visitsForPatient(john.id)).toHaveLength(2);
   });
 });
+
+describe('database rules', () => {
+  it('shares one visit when two captures arrive at the same moment', async () => {
+    const [a, b] = await Promise.all([db.ensureVisit('race-1', '2026-11-06'), db.ensureVisit('race-1', '2026-11-06')]);
+    expect(a.id).toBe(b.id);
+    expect((await db.visitsForDate('2026-11-06')).filter((v) => v.patientId === 'race-1')).toHaveLength(1);
+  });
+
+  it('treats MRNs the same regardless of spacing and case', async () => {
+    await db.importRecords([{ mrn: '123 456 7890', firstName: 'Ann', lastName: 'Byrne' }], '2026-12-01', 'csv');
+    const again = await db.importRecords([{ mrn: '1234567890', firstName: 'Ann', lastName: 'Byrne' }], '2026-12-02', 'csv');
+    expect(again).toMatchObject({ added: 0, updated: 1 });
+    expect((await db.allPatients()).filter((p) => p.firstName === 'Ann')).toHaveLength(1);
+    expect(await db.findPatientByMrn(' 1234 567 890')).toBeTruthy();
+  });
+
+  it('matches a second row for the same person within one import after assigning an MRN', async () => {
+    await db.importRecords([{ firstName: 'Tom', lastName: 'Kelly', dob: '1970-01-01' }], '2026-12-03', 'csv');
+    const r = await db.importRecords(
+      [
+        { mrn: 'K1', firstName: 'Tom', lastName: 'Kelly', dob: '1970-01-01', time: '09:00' },
+        { mrn: 'K1', firstName: 'Thomas', lastName: 'Kelly', time: '14:00' },
+      ],
+      '2026-12-03',
+      'csv',
+    );
+    expect(r.added).toBe(0);
+    expect((await db.allPatients()).filter((p) => p.lastName === 'Kelly')).toHaveLength(1);
+  });
+
+  it('patches a capture without overwriting newer edits', async () => {
+    const base = {
+      id: 'cap-1', patientId: 'p', visitId: 'v', date: '2026-11-06', eye: 'OD' as const, takenAt: 1, width: 1, height: 1,
+      mime: 'image/webp', bytes: 1, fileName: 'a.webp', source: 'live' as const,
+    };
+    await db.addCapture(base, { id: 'cap-1', full: new Blob(['x']), thumb: new Blob(['y']) });
+    await db.patchCapture('cap-1', { starred: true });
+    const next = await db.patchCapture('cap-1', { archivedPath: 'P/2026-11-06/a.webp' });
+    expect(next).toMatchObject({ starred: true, archivedPath: 'P/2026-11-06/a.webp' });
+  });
+});

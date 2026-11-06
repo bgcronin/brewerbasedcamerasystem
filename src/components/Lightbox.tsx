@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { formatClock, formatShortDate } from '../lib/dates';
 import { getImage } from '../lib/db';
@@ -7,7 +7,7 @@ import { formatBytes, formatLabel, megapixels } from '../lib/naming';
 import { useFullImage } from '../lib/thumbs';
 import { downloadBlob } from '../lib/zip';
 import { TECHNIQUES, techniqueLabel, type Eye, type ImageFormat } from '../lib/types';
-import { closeLightbox, deleteCapture, openCompare, stepLightbox, updateCapture, useApp } from '../state/store';
+import { closeLightbox, deleteCapture, openCompare, updateCapture, useApp } from '../state/store';
 import { Icon } from './Icon';
 import { Button, EyeTag, IconButton, Segmented, Thumb, cx } from './ui';
 import { ZOOM_FIT, ZoomPane, type ZoomState } from './ZoomPane';
@@ -18,7 +18,10 @@ export function Lightbox() {
   const patient = useApp((s) => s.patient);
   const [view, setView] = useState<ZoomState>(ZOOM_FIT);
   const [info, setInfo] = useState(true);
-  const id = lb ? lb.ids[lb.index] : null;
+  // The list follows the live captures: a deleted photo drops out, and comes back on Undo.
+  const ids = useMemo(() => (lb ? lb.ids.filter((x) => captures.some((k) => k.id === x)) : []), [lb, captures]);
+  const index = lb ? Math.min(lb.index, ids.length - 1) : -1;
+  const id = index >= 0 ? ids[index] : null;
   const c = captures.find((x) => x.id === id);
   const url = useFullImage(c?.id);
   const [note, setNote] = useState('');
@@ -28,26 +31,29 @@ export function Lightbox() {
     setNote(c?.note ?? '');
   }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Close if the open photo was deleted.
   useEffect(() => {
-    if (lb && !c) {
-      const remaining = lb.ids.filter((x) => captures.some((k) => k.id === x));
-      if (!remaining.length) closeLightbox();
-      else useApp.setState({ lightbox: { ids: remaining, index: Math.min(lb.index, remaining.length - 1) } });
-    }
-  }, [lb, c, captures]);
+    if (lb && ids.length === 0) closeLightbox();
+  }, [lb, ids.length]);
+
+  const step = (delta: number) => {
+    if (!lb) return;
+    useApp.setState({ lightbox: { ...lb, index: Math.min(ids.length - 1, Math.max(0, index + delta)) } });
+  };
 
   useEffect(() => {
     if (!lb) return;
     const onKey = (e: KeyboardEvent) => {
-      if ((e.target as HTMLElement).closest('input, textarea, select')) {
-        if (e.key === 'Escape') (e.target as HTMLElement).blur();
+      const target = e.target as HTMLElement | null;
+      if (target?.closest?.('input, textarea, select')) {
+        if (e.key === 'Escape') target.blur();
         return;
       }
+      // A held key must never act more than once: Delete in particular.
+      if (e.repeat) return;
       if (e.key === 'Escape') closeLightbox();
-      else if (e.key === 'ArrowRight') stepLightbox(1);
-      else if (e.key === 'ArrowLeft') stepLightbox(-1);
-      else if (e.key === 'Delete' || e.key === 'Backspace') c && deleteCapture(c.id);
+      else if (e.key === 'ArrowRight') step(1);
+      else if (e.key === 'ArrowLeft') step(-1);
+      else if (e.key === 'Delete') c && deleteCapture(c.id);
       else if (e.key.toLowerCase() === 's' && c) void updateCapture(c.id, { starred: !c.starred });
       else if (e.key.toLowerCase() === 'i') setInfo((v) => !v);
       else if (e.key === '0') setView(ZOOM_FIT);
@@ -56,7 +62,7 @@ export function Lightbox() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [lb, c]);
+  }, [lb, c, ids, index]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!lb || !c) return null;
 
@@ -82,7 +88,7 @@ export function Lightbox() {
           </div>
         </div>
         <span className="viewer-count">
-          {lb.index + 1} of {lb.ids.length}
+          {index + 1} of {ids.length}
         </span>
         <div className="viewer-actions">
           <IconButton icon="star" label="Star (S)" active={c.starred} onClick={() => void updateCapture(c.id, { starred: !c.starred })} />
@@ -96,13 +102,13 @@ export function Lightbox() {
       <div className={cx('viewer-body', info && 'has-info')}>
         <div className="viewer-stage">
           <ZoomPane src={url} naturalWidth={c.width} naturalHeight={c.height} view={view} onView={setView} alt={`${c.eye} ${techniqueLabel(c.technique)}`} />
-          {lb.index > 0 && (
-            <button type="button" className="viewer-nav viewer-prev" onClick={() => stepLightbox(-1)} aria-label="Previous">
+          {index > 0 && (
+            <button type="button" className="viewer-nav viewer-prev" onClick={() => step(-1)} aria-label="Previous">
               <Icon name="chevronLeft" size={22} />
             </button>
           )}
-          {lb.index < lb.ids.length - 1 && (
-            <button type="button" className="viewer-nav viewer-next" onClick={() => stepLightbox(1)} aria-label="Next">
+          {index < ids.length - 1 && (
+            <button type="button" className="viewer-nav viewer-next" onClick={() => step(1)} aria-label="Next">
               <Icon name="chevronRight" size={22} />
             </button>
           )}
@@ -180,12 +186,12 @@ export function Lightbox() {
         )}
       </div>
 
-      {lb.ids.length > 1 && (
+      {ids.length > 1 && (
         <footer className="viewer-strip">
-          {lb.ids.map((x, i) => {
+          {ids.map((x, i) => {
             const k = captures.find((cc) => cc.id === x);
             return (
-              <button key={x} type="button" className={cx('viewer-thumb', i === lb.index && 'is-on')} onClick={() => useApp.setState({ lightbox: { ...lb, index: i } })}>
+              <button key={x} type="button" className={cx('viewer-thumb', i === index && 'is-on')} onClick={() => useApp.setState({ lightbox: { ...lb, index: i } })}>
                 <Thumb id={x} alt="" />
                 {k && <EyeTag eye={k.eye} />}
               </button>

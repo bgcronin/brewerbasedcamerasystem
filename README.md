@@ -50,7 +50,7 @@ For development with live reload: `npm run dev` → http://localhost:5173.
 4. **Capture** with Space, the foot switch or the shutter button. You get a soft flash and click, and the thumbnail drops into the filmstrip.
 5. **Review** (V) shows every visit right eye beside left. Open any photo to zoom to 1:1, star it, add a note, re-label it, or **compare** it side by side with a previous visit using linked zoom. **Export** packs the patient's photos into a ZIP.
 
-Deleted a photo by mistake? Press **Undo** on the notice that appears.
+Deleted a photo by mistake? Press **Undo** on the notice that appears. Relabelling a photo (OD → OS, or a different illumination) renames its file in the archive folder too, so the folder always agrees with the label.
 
 ---
 
@@ -109,8 +109,9 @@ Any CSV, TSV or text export works, including rows copied straight from Excel or 
 | Appointment | Time / Appt Time / Start, Date / Clinic Date (combined `03/11/2026 09:30` is fine) |
 | Other | Sex / Gender, Clinic / Location, Consultant / Clinician, Reason / Appointment Type, Notes |
 
-- Dates are read as **DD/MM/YYYY** or **MM/DD/YYYY** automatically from the data, and you can override this. ISO, `12-Mar-1956` and Excel serial dates also work.
-- Patients are matched across days by **MRN**, so each person keeps one photo history. Without an MRN, matching falls back to name + date of birth.
+- Dates are read as **DD/MM/YYYY** or **MM/DD/YYYY** automatically from the data, and you can override this. When a file can't be told apart (every day is 12 or less), Lumen assumes day first and says so in the import sheet. ISO, `12-Mar-1956` and Excel serial dates also work.
+- Patients are matched across days by **MRN** (spacing and case are ignored, so `123 456 7890` and `1234567890` are the same number), so each person keeps one photo history. Without an MRN, matching falls back to name + date of birth. Two patients can never share an MRN: adding a patient with a known MRN attaches a visit to the existing record instead.
+- Each patient's archive folder name is fixed the first time a photo is written, so correcting a name or adding an MRN later never splits their history.
 - A sample list is in [`public/sample-worklist.csv`](public/sample-worklist.csv). Every patient in it is fictitious.
 
 ### Adding other import systems
