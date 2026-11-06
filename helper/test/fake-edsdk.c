@@ -5,12 +5,15 @@
  *   gcc -shared -fPIC -o libEDSDK.so fake-edsdk.c            (13.x interface)
  *   gcc -shared -fPIC -DGEN3 -o libEDSDK.so fake-edsdk.c     (3.x interface)
  *
- * Environment: FAKE_RAW_JPEG=1 sends RAW+JPEG pairs; FAKE_NO_CAMERA=1 reports no camera.
+ * Environment: FAKE_RAW_JPEG=1 sends RAW+JPEG pairs; FAKE_RAW_ONLY=1 sends only the RAW;
+ * FAKE_NO_CAMERA=1 reports no camera; FAKE_FAIL_SETCAPACITY=1 makes EdsSetCapacity fail;
+ * FAKE_BUTTON_SHOT_AFTER_MS=N takes an extra "camera button" shot N ms after the first capture.
  */
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #ifdef GEN3
 typedef uint32_t EdsSize;
@@ -47,6 +50,7 @@ static void *g_pending_items[8];
 static int g_pending_count;
 static uint32_t g_pending_props[16];
 static int g_pending_prop_count;
+static double g_button_due; /* monotonic seconds; 0 = no button shot scheduled */
 
 static uint32_t p_iso = 0x58, p_av = 0x38, p_tv = 0x70, p_wb = 5, p_ae = 3, p_saveto = 1, p_evf = 1;
 static const int32_t ISO_DESC[] = {0x00, 0x48, 0x4b, 0x4d, 0x50, 0x53, 0x55, 0x58, 0x5b, 0x5d, 0x60, 0x63, 0x65, 0x68, 0x6b, 0x6d, 0x70, 0x73, 0x75, 0x78};
@@ -89,6 +93,12 @@ static int in_list(const int32_t *list, int n, uint32_t v) {
 
 static void queue_prop(uint32_t id) {
   if (g_pending_prop_count < 16) g_pending_props[g_pending_prop_count++] = id;
+}
+
+static double now_s(void) {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return ts.tv_sec + ts.tv_nsec / 1e9;
 }
 
 EdsError EdsInitializeSDK(void) { return 0; }
@@ -213,26 +223,36 @@ static void make_item(const char *name, size_t size) {
   if (g_pending_count < 8) g_pending_items[g_pending_count++] = item;
 }
 
+/* One shot: the files the camera would offer for it, per image quality. */
+static void shoot(void) {
+  char name[32];
+  g_shots++;
+  if (getenv("FAKE_RAW_JPEG") || getenv("FAKE_RAW_ONLY")) {
+    snprintf(name, sizeof name, "IMG_%04d.CR2", g_shots);
+    make_item(name, 4096);
+  }
+  if (!getenv("FAKE_RAW_ONLY")) {
+    snprintf(name, sizeof name, "IMG_%04d.JPG", g_shots);
+    make_item(name, 200000);
+  }
+}
+
 EdsError EdsSendCommand(void *cam, uint32_t cmd, int32_t param) {
   if (!g_session) return 0x2003;
   if (cmd == 0x04 && param == 0) return 0;      /* shutter released */
   if (cmd == 0x01) return 0;                    /* keep awake */
   if ((cmd == 0x04 && (param & 0xff) == 3) || cmd == 0x00) {
     if (!(p_saveto & 2) || !g_capacity_set) return 0x8d06; /* nowhere to put the photo */
-    char name[32];
-    g_shots++;
-    if (getenv("FAKE_RAW_JPEG")) {
-      snprintf(name, sizeof name, "IMG_%04d.CR2", g_shots);
-      make_item(name, 4096);
-    }
-    snprintf(name, sizeof name, "IMG_%04d.JPG", g_shots);
-    make_item(name, 200000);
+    shoot();
+    const char *after = getenv("FAKE_BUTTON_SHOT_AFTER_MS");
+    if (after && g_shots == 1) g_button_due = now_s() + atoi(after) / 1000.0;
     return 0;
   }
   return 0x07;
 }
 EdsError EdsSendStatusCommand(void *cam, uint32_t cmd, int32_t param) { return 0; }
 EdsError EdsSetCapacity(void *cam, EdsCapacity cap) {
+  if (getenv("FAKE_FAIL_SETCAPACITY")) return 0x86;
   g_capacity_set = cap.reset == 1 && cap.bytesPerSector == 0x1000 && cap.numberOfFreeClusters == 0x7fffffff;
   return g_capacity_set ? 0 : 0x86;
 }
@@ -241,6 +261,10 @@ EdsError EdsSetPropertyEventHandler(void *cam, uint32_t ev, PropertyHandler h, v
 EdsError EdsSetCameraStateEventHandler(void *cam, uint32_t ev, StateHandler h, void *ctx) { g_state = h; return 0; }
 
 EdsError EdsGetEvent(void) {
+  if (g_button_due && now_s() >= g_button_due) {
+    g_button_due = 0;
+    shoot(); /* someone pressed the camera's own shutter button */
+  }
   for (int i = 0; i < g_pending_prop_count; i++)
     if (g_prop) g_prop(0x101, g_pending_props[i], 0, NULL);
   g_pending_prop_count = 0;

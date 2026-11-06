@@ -50,27 +50,46 @@ export function createServer({ backend, port = 47800, host = '127.0.0.1', distDi
   });
 
   const serveStatic = (req, res) => {
-    const url = new URL(req.url, 'http://x');
-    let rel = decodeURIComponent(url.pathname);
-    if (rel === '/' || rel === '') rel = '/index.html';
-    const file = path.resolve(distDir, '.' + rel);
-    if (!file.startsWith(path.resolve(distDir))) {
+    const root = path.resolve(distDir);
+    let file;
+    try {
+      const url = new URL(req.url, 'http://x');
+      let pathname = decodeURIComponent(url.pathname);
+      if (pathname.includes('\0')) throw new Error('NUL in path');
+      if (pathname === '/' || pathname === '') pathname = '/index.html';
+      file = path.resolve(root, '.' + pathname);
+    } catch {
+      // Malformed percent-encoding (URIError), an unparsable URL, or a NUL byte.
+      res.writeHead(400).end();
+      return;
+    }
+    // Anything that resolves outside dist/ (also "dist-sibling/…") is refused.
+    const rel = path.relative(root, file);
+    if (rel.startsWith('..') || path.isAbsolute(rel)) {
       res.writeHead(403).end();
       return;
     }
     fs.stat(file, (err, st) => {
-      const target = !err && st.isFile() ? file : path.join(distDir, 'index.html');
+      const target = !err && st.isFile() ? file : path.join(root, 'index.html');
       const ext = path.extname(target).toLowerCase();
-      res.writeHead(200, {
-        'Content-Type': MIME[ext] ?? 'application/octet-stream',
-        'Cache-Control': /index\.html$|sw\.js$/.test(target) ? 'no-cache' : 'public, max-age=31536000, immutable',
-        'X-Content-Type-Options': 'nosniff',
+      const stream = fs.createReadStream(target);
+      stream.on('open', () => {
+        res.writeHead(200, {
+          'Content-Type': MIME[ext] ?? 'application/octet-stream',
+          'Cache-Control': /index\.html$|sw\.js$/.test(target) ? 'no-cache' : 'public, max-age=31536000, immutable',
+          'X-Content-Type-Options': 'nosniff',
+        });
       });
-      fs.createReadStream(target).pipe(res);
+      stream.on('error', (e) => {
+        // The file vanished or can't be read between stat and open.
+        if (res.headersSent) res.destroy();
+        else res.writeHead(e.code === 'ENOENT' ? 404 : 500).end();
+      });
+      stream.pipe(res);
     });
   };
 
-  const server = http.createServer((req, res) => {
+  const handleRequest = (req, res) => {
     if (req.url?.startsWith('/status')) {
       res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
       res.end(JSON.stringify(status()));
@@ -81,12 +100,23 @@ export function createServer({ backend, port = 47800, host = '127.0.0.1', distDi
       return;
     }
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    const cam = backend.state;
+    const cam = backend.state ?? {};
     res.end(`<!doctype html><meta charset="utf-8"><title>Lumen Camera Link</title>
 <body style="font:15px system-ui;background:#05080d;color:#eef3fb;display:grid;place-items:center;height:100vh;margin:0">
 <div><h1 style="font-weight:650;letter-spacing:-.02em">Lumen Camera Link is running</h1>
 <p>Camera: ${cam.state === 'connected' ? cam.model : cam.message ?? cam.state}</p>
 <p style="color:#8e9cb2">Open Lumen and choose <b>Canon EOS · direct</b> as the camera source.</p></div>`);
+  };
+
+  const server = http.createServer((req, res) => {
+    try {
+      handleRequest(req, res);
+    } catch (e) {
+      // No request may take the helper down.
+      log(`request ${req.url}: ${e?.message ?? e}`);
+      if (res.headersSent) res.destroy();
+      else res.writeHead(500).end();
+    }
   });
 
   const wss = new WebSocketServer({
@@ -125,6 +155,9 @@ export function createServer({ backend, port = 47800, host = '127.0.0.1', distDi
       unfiledCount = 0;
     }
 
+    // ws emits 'error' for bad frames (too large, invalid UTF-8); unhandled, that would crash the process.
+    ws.on('error', (e) => log(`websocket: ${e?.message ?? e}`));
+
     ws.on('message', async (raw, isBinary) => {
       if (isBinary) return;
       let msg;
@@ -133,8 +166,10 @@ export function createServer({ backend, port = 47800, host = '127.0.0.1', distDi
       } catch {
         return;
       }
+      if (!msg || typeof msg !== 'object' || typeof msg.type !== 'string') return;
+      const id = msg.id;
       active = ws;
-      const reply = (ok, extra = {}) => send(ws, { type: 'result', id: msg.id, ok, ...extra });
+      const reply = (ok, extra = {}) => send(ws, { type: 'result', id, ok, ...extra });
       try {
         switch (msg.type) {
           case 'active':

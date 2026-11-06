@@ -47,13 +47,16 @@ function findLibraries(root) {
 }
 
 /** Prefer the 64-bit build on 64-bit Node (Canon ships EDSDK/Dll for 32-bit and EDSDK_64/Dll for 64-bit). */
-function pickLibrary(libs) {
+function pickLibrary(libs, root) {
   if (!libs.length) return null;
   const is64 = process.arch === 'x64' || process.arch === 'arm64';
   const scored = libs.map((p) => {
+    // Only the path inside the SDK folder counts; an ancestor such as "lumen-win64" must not.
+    const rel = path.relative(root, p);
     let score = 0;
-    if (/_64|x64|amd64|win64/i.test(p)) score += is64 ? 10 : -10;
-    if (/arm64/i.test(p)) score += process.arch === 'arm64' ? 5 : -5;
+    if (is64 && rel.split(/[\\/]/).some((seg) => /^EDSDK_64$/i.test(seg))) score += 20;
+    if (/_64|x64|amd64|win64/i.test(rel)) score += is64 ? 10 : -10;
+    if (/arm64/i.test(rel)) score += process.arch === 'arm64' ? 5 : -5;
     return { p, score };
   });
   scored.sort((a, b) => b.score - a.score);
@@ -137,7 +140,7 @@ export function checkHeader(headerText) {
 
 export function locateSdk({ sdkPath = process.env.EDSDK_PATH, generation = process.env.EDSDK_GENERATION } = {}) {
   const root = sdkPath ? path.resolve(sdkPath) : DEFAULT_SDK_DIR;
-  const libPath = pickLibrary(findLibraries(root));
+  const libPath = pickLibrary(findLibraries(root), root);
   if (!libPath) return { ok: false, root };
 
   const headerPath = findHeader(root, libPath);

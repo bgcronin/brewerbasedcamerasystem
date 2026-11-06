@@ -66,7 +66,7 @@ export function loadEdsdk(sdk) {
     const hint =
       process.platform === 'darwin' && /incompatible architecture|wrong architecture|mach-o/i.test(String(e.message))
         ? ' This Canon SDK build does not match this Mac’s processor. Use a newer EDSDK with Apple Silicon support, or run Node for Intel (Rosetta).'
-        : process.platform === 'win32' && /193|not a valid Win32/i.test(String(e.message))
+        : process.platform === 'win32' && /x86.*x64|193|not a valid Win32/i.test(String(e.message))
           ? ' This looks like the 32-bit EDSDK. Use the EDSDK_64 folder from Canon’s download.'
           : '';
     throw new Error(`Could not load the Canon SDK at ${sdk.libPath}: ${e.message}.${hint}`);

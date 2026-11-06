@@ -20,6 +20,12 @@ const EXPOSURE_PROPS = { iso: PropID.ISOSpeed, tv: PropID.Tv, av: PropID.Av, wb:
 const BUSY = new Set([Err.DEVICE_BUSY, Err.PTP_DEVICE_BUSY, Err.OBJECT_NOTREADY]);
 const GONE = new Set([Err.COMM_DISCONNECTED, Err.DEVICE_NOT_FOUND, Err.DEVICE_INVALID, Err.SESSION_NOT_OPEN]);
 const RAW = /\.(cr2|cr3|crw)$/i;
+const CAPTURE_TIMEOUT_MS = 20_000;
+// A photo belongs to a Lumen capture only if it arrives this soon after the shutter fired.
+const MATCH_WINDOW_MS = 8000;
+// In RAW+JPEG the JPEG follows the RAW in the same burst; after this long we assume RAW only.
+const JPEG_AFTER_RAW_MS = 3000;
+const RAW_ONLY_MESSAGE = 'The camera is set to RAW only, and RAW files can’t be shown in a browser. Set image quality to JPEG or RAW+JPEG.';
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export class EdsdkBackend extends EventEmitter {
@@ -44,7 +50,22 @@ export class EdsdkBackend extends EventEmitter {
     this.propsDirty = false;
     this.timers = [];
     this.handlers = [];
-    this.busy = false;
+    this.busyDepth = 0;
+    this.rawTimer = null;
+  }
+
+  /** True while a settings write, shutter press or download is in progress. */
+  get busy() {
+    return this.busyDepth > 0;
+  }
+
+  async withBusy(fn) {
+    this.busyDepth++;
+    try {
+      return await fn();
+    } finally {
+      this.busyDepth--;
+    }
   }
 
   get name() {
@@ -81,17 +102,14 @@ export class EdsdkBackend extends EventEmitter {
     for (const t of this.timers) clearInterval(t);
     this.timers = [];
     try {
-      if (this.camera) {
-        this.setLiveViewNow(false);
-        this.api.EdsCloseSession(this.camera);
-        this.api.EdsRelease(this.camera);
-      }
+      if (this.camera) this.setLiveViewNow(false);
     } catch {
       /* shutting down anyway */
     }
-    this.camera = null;
-    for (const h of this.handlers) koffi.unregister(h);
-    this.handlers = [];
+    this.releaseCamera();
+    this.failPending('Lumen Camera Link was stopped.');
+    clearTimeout(this.rawTimer);
+    this.rawTimer = null;
     try {
       this.api?.EdsTerminateSDK();
     } catch {
@@ -143,17 +161,25 @@ export class EdsdkBackend extends EventEmitter {
         return;
       }
       this.camera = cam;
-      this.configure();
-      const model = this.readString(PropID.ProductName) || info.szDeviceDescription || 'Canon EOS';
-      this.setState({
-        state: 'connected',
-        model,
-        serial: this.readString(PropID.BodyIDEx) || undefined,
-        firmware: this.readString(PropID.FirmwareVersion) || undefined,
-      });
-      this.log(`connected to ${model}`);
-      this.refreshProps(true);
-      if (this.liveView) this.setLiveViewNow(true);
+      try {
+        this.configure();
+        const model = this.readString(PropID.ProductName) || info.szDeviceDescription || 'Canon EOS';
+        this.setState({
+          state: 'connected',
+          model,
+          serial: this.readString(PropID.BodyIDEx) || undefined,
+          firmware: this.readString(PropID.FirmwareVersion) || undefined,
+        });
+        this.log(`connected to ${model}`);
+        this.refreshProps(true);
+        if (this.liveView) this.setLiveViewNow(true);
+      } catch (e) {
+        // Never keep a half-configured camera; the 2 s timer retries from scratch.
+        this.releaseCamera();
+        this.log(`connect: ${e?.message ?? e}`);
+        if (GONE.has(e?.code)) this.setState({ state: 'searching', message: 'The camera was disconnected.' });
+        else this.setState({ state: 'error', message: e?.message ?? String(e), model: info.szDeviceDescription });
+      }
     } catch (e) {
       this.handleError(e, 'connect');
     } finally {
@@ -163,30 +189,42 @@ export class EdsdkBackend extends EventEmitter {
 
   configure() {
     const { api, types } = this;
-    const onObject = koffi.register((event, ref) => {
-      if (event === ObjectEvent.DirItemRequestTransfer && ref) this.transferQueue.push(ref);
-      else if (ref) this.api.EdsRelease(ref);
-      return Err.OK;
-    }, koffi.pointer(types.ObjectHandler));
-    const onProperty = koffi.register((event, propId) => {
-      if (event === PropertyEvent.PropertyChanged || event === PropertyEvent.PropertyDescChanged) {
-        if (Object.values(EXPOSURE_PROPS).includes(propId) || propId === PropID.AEMode || propId === PropID.AEModeSelect || propId === PropID.BatteryLevel) {
-          this.propsDirty = true;
+    // Handlers are kept locally until everything succeeds, so a failed attempt leaks nothing.
+    const handlers = [];
+    const register = (fn, proto) => {
+      const h = koffi.register(fn, koffi.pointer(proto));
+      handlers.push(h);
+      return h;
+    };
+    try {
+      const onObject = register((event, ref) => {
+        if (event === ObjectEvent.DirItemRequestTransfer && ref) this.transferQueue.push(ref);
+        else if (ref) this.api.EdsRelease(ref);
+        return Err.OK;
+      }, types.ObjectHandler);
+      const onProperty = register((event, propId) => {
+        if (event === PropertyEvent.PropertyChanged || event === PropertyEvent.PropertyDescChanged) {
+          if (Object.values(EXPOSURE_PROPS).includes(propId) || propId === PropID.AEMode || propId === PropID.AEModeSelect || propId === PropID.BatteryLevel) {
+            this.propsDirty = true;
+          }
         }
-      }
-      return Err.OK;
-    }, koffi.pointer(types.PropertyHandler));
-    const onState = koffi.register((event) => {
-      if (event === StateEvent.Shutdown) setImmediate(() => this.disconnect('The camera was switched off or unplugged.'));
-      if (event === StateEvent.WillSoonShutDown && this.camera) this.api.EdsSendCommand(this.camera, CameraCommand.ExtendShutDownTimer, 0);
-      if (event === StateEvent.CaptureError) setImmediate(() => this.failPending('The camera could not take the picture.'));
-      return Err.OK;
-    }, koffi.pointer(types.StateHandler));
-    this.handlers.push(onObject, onProperty, onState);
-    check(api.EdsSetObjectEventHandler(this.camera, ObjectEvent.All, onObject, null), 'EdsSetObjectEventHandler');
-    check(api.EdsSetPropertyEventHandler(this.camera, PropertyEvent.All, onProperty, null), 'EdsSetPropertyEventHandler');
-    check(api.EdsSetCameraStateEventHandler(this.camera, StateEvent.All, onState, null), 'EdsSetCameraStateEventHandler');
-    this.setSaveTo(this.saveTo);
+        return Err.OK;
+      }, types.PropertyHandler);
+      const onState = register((event) => {
+        if (event === StateEvent.Shutdown) setImmediate(() => this.disconnect('The camera was switched off or unplugged.'));
+        if (event === StateEvent.WillSoonShutDown && this.camera) this.api.EdsSendCommand(this.camera, CameraCommand.ExtendShutDownTimer, 0);
+        if (event === StateEvent.CaptureError) setImmediate(() => this.failPending('The camera could not take the picture.'));
+        return Err.OK;
+      }, types.StateHandler);
+      check(api.EdsSetObjectEventHandler(this.camera, ObjectEvent.All, onObject, null), 'EdsSetObjectEventHandler');
+      check(api.EdsSetPropertyEventHandler(this.camera, PropertyEvent.All, onProperty, null), 'EdsSetPropertyEventHandler');
+      check(api.EdsSetCameraStateEventHandler(this.camera, StateEvent.All, onState, null), 'EdsSetCameraStateEventHandler');
+      this.setSaveTo(this.saveTo);
+    } catch (e) {
+      for (const h of handlers) koffi.unregister(h);
+      throw e;
+    }
+    this.handlers.push(...handlers);
   }
 
   /** Photos come to the computer; 'both' also keeps them on the card as a backup. */
@@ -203,15 +241,25 @@ export class EdsdkBackend extends EventEmitter {
     check(this.api.EdsSetCapacity(this.camera, { numberOfFreeClusters: 0x7fffffff, bytesPerSector: 0x1000, reset: 1 }), 'EdsSetCapacity');
   }
 
+  /** Close the session, drop the camera ref and free the event handlers registered for it. */
+  releaseCamera() {
+    const cam = this.camera;
+    this.camera = null;
+    if (cam) {
+      try {
+        this.api.EdsCloseSession(cam);
+        this.api.EdsRelease(cam);
+      } catch {
+        /* already gone */
+      }
+    }
+    for (const h of this.handlers) koffi.unregister(h);
+    this.handlers = [];
+  }
+
   disconnect(message) {
     if (!this.camera) return;
-    try {
-      this.api.EdsCloseSession(this.camera);
-      this.api.EdsRelease(this.camera);
-    } catch {
-      /* already gone */
-    }
-    this.camera = null;
+    this.releaseCamera();
     this.props = {};
     this.failPending(message);
     this.emit('liveview', { on: false });
@@ -320,12 +368,7 @@ export class EdsdkBackend extends EventEmitter {
     }
     const code = codeFor(key, label, this.descCodes[key]);
     if (code == null) throw new Error(`${label} is not available on this camera right now.`);
-    this.busy = true;
-    try {
-      await this.retryBusy(() => this.writeUInt32(id, code), `set ${key}`);
-    } finally {
-      this.busy = false;
-    }
+    await this.withBusy(() => this.retryBusy(() => this.writeUInt32(id, code), `set ${key}`));
     this.refreshProps();
   }
 
@@ -363,6 +406,11 @@ export class EdsdkBackend extends EventEmitter {
   }
 
   setLiveViewNow(on) {
+    if (on) {
+      // Canon's sample enables live view mode first; bodies without the property don't need it.
+      const err = this.writeUInt32(PropID.Evf_Mode, 1);
+      if (err !== Err.OK && err !== Err.NOT_SUPPORTED && err !== Err.DEVICEPROP_NOT_SUPPORTED) this.log(`live view mode: ${new EdsError(err).message}`);
+    }
     const current = this.readUInt32(PropID.Evf_OutputDevice) ?? 0;
     const next = on ? current | EvfOutputDevice.PC : current & ~EvfOutputDevice.PC;
     if (next !== current) {
@@ -432,20 +480,18 @@ export class EdsdkBackend extends EventEmitter {
 
   async capture(requestId) {
     if (!this.camera) throw new Error('The camera is not connected.');
-    const pending = { requestId, exposure: this.exposureSnapshot(), at: Date.now() };
+    const pending = { requestId, exposure: this.exposureSnapshot(), at: Date.now(), firedAt: null, rawTimer: null };
     this.pendingCaptures.push(pending);
     pending.timer = setTimeout(() => {
-      const i = this.pendingCaptures.indexOf(pending);
-      if (i >= 0) {
-        this.pendingCaptures.splice(i, 1);
+      if (this.dropPending(pending)) {
         this.emit('capture-failed', { requestId, message: 'No photo arrived from the camera. If it is set to RAW only, switch image quality to JPEG.' });
       }
-    }, 20_000);
+    }, CAPTURE_TIMEOUT_MS);
     try {
       await this.fireShutter();
+      pending.firedAt = Date.now();
     } catch (e) {
-      clearTimeout(pending.timer);
-      this.pendingCaptures.splice(this.pendingCaptures.indexOf(pending), 1);
+      this.dropPending(pending);
       if (e?.code === Err.TAKE_PICTURE_NO_CARD_NG && this.saveTo === 'both') {
         this.log('no memory card: saving to the computer only');
         this.setSaveTo('host');
@@ -457,73 +503,125 @@ export class EdsdkBackend extends EventEmitter {
 
   async fireShutter() {
     const { api } = this;
-    this.busy = true;
-    try {
-      const press = api.EdsSendCommand(this.camera, CameraCommand.PressShutterButton, ShutterButton.Completely_NonAF) >>> 0;
-      if (press === Err.OK) {
-        await this.retryBusy(() => api.EdsSendCommand(this.camera, CameraCommand.PressShutterButton, ShutterButton.Off), 'release shutter');
+    const button = (state) => api.EdsSendCommand(this.camera, CameraCommand.PressShutterButton, state) >>> 0;
+    await this.withBusy(async () => {
+      const press = button(ShutterButton.Completely_NonAF);
+      if (press === Err.NOT_SUPPORTED || press === Err.INVALID_PARAMETER) {
+        // Older bodies: the classic one-shot command.
+        await this.retryBusy(() => api.EdsSendCommand(this.camera, CameraCommand.TakePicture, 0), 'take picture');
         return;
       }
-      if (BUSY.has(press)) {
-        await this.retryBusy(() => api.EdsSendCommand(this.camera, CameraCommand.PressShutterButton, ShutterButton.Completely_NonAF), 'shutter');
-        await this.retryBusy(() => api.EdsSendCommand(this.camera, CameraCommand.PressShutterButton, ShutterButton.Off), 'release shutter');
-        return;
+      try {
+        if (BUSY.has(press)) await this.retryBusy(() => button(ShutterButton.Completely_NonAF), 'shutter');
+        else check(press, 'shutter');
+      } finally {
+        // Never leave the button logically pressed. A failed release is a warning, not a failed capture.
+        if (this.camera) {
+          try {
+            await this.retryBusy(() => button(ShutterButton.Off), 'release shutter');
+          } catch (e) {
+            this.log(`warning: ${e.message}`);
+          }
+        }
       }
-      // Older bodies: the classic one-shot command.
-      await this.retryBusy(() => api.EdsSendCommand(this.camera, CameraCommand.TakePicture, 0), 'take picture');
-    } finally {
-      this.busy = false;
-    }
+    });
+  }
+
+  /** Remove a pending capture and its timers; false if it was already gone. */
+  dropPending(pending) {
+    clearTimeout(pending.timer);
+    clearTimeout(pending.rawTimer);
+    pending.rawTimer = null;
+    const i = this.pendingCaptures.indexOf(pending);
+    if (i < 0) return false;
+    this.pendingCaptures.splice(i, 1);
+    return true;
   }
 
   failPending(message) {
-    for (const p of this.pendingCaptures.splice(0)) {
-      clearTimeout(p.timer);
+    for (const p of this.pendingCaptures.slice()) {
+      this.dropPending(p);
       this.emit('capture-failed', { requestId: p.requestId, message: message ?? 'Capture cancelled.' });
     }
   }
 
-  async processTransfers() {
-    this.busy = true;
-    try {
+  /**
+   * The capture a new file belongs to: the one whose RAW just arrived (its JPEG follows),
+   * else the oldest one fired within the match window. Anything else was taken by hand.
+   */
+  matchPending(isRaw) {
+    const now = Date.now();
+    if (!isRaw) {
+      const waiting = this.pendingCaptures.find((p) => p.rawTimer);
+      if (waiting) return waiting;
+    }
+    return this.pendingCaptures.find((p) => !p.rawTimer && p.firedAt != null && now - p.firedAt <= MATCH_WINDOW_MS) ?? null;
+  }
+
+  /** A RAW arrived; if no JPEG follows soon the camera is set to RAW only. */
+  expectJpeg(pending) {
+    if (pending) {
+      clearTimeout(pending.rawTimer);
+      pending.rawTimer = setTimeout(() => {
+        if (this.dropPending(pending)) this.emit('capture-failed', { requestId: pending.requestId, message: RAW_ONLY_MESSAGE });
+      }, JPEG_AFTER_RAW_MS);
+      return;
+    }
+    clearTimeout(this.rawTimer);
+    this.rawTimer = setTimeout(() => {
+      this.rawTimer = null;
+      this.emit('notice', { message: 'RAW files can’t be shown in a browser. Set image quality to JPEG or RAW+JPEG.' });
+    }, JPEG_AFTER_RAW_MS);
+  }
+
+  processTransfers() {
+    return this.withBusy(() => {
       while (this.transferQueue.length) {
         const ref = this.transferQueue.shift();
         try {
           this.downloadItem(ref);
         } catch (e) {
           this.handleError(e, 'download');
-          this.emit('capture-failed', { requestId: this.pendingCaptures[0]?.requestId, message: `The photo could not be downloaded: ${e.message}` });
         } finally {
           this.api.EdsRelease(ref);
         }
       }
-    } finally {
-      this.busy = false;
-    }
+    });
   }
 
   downloadItem(ref) {
     const { api } = this;
-    const info = {};
-    check(api.EdsGetDirectoryItemInfo(ref, info), 'EdsGetDirectoryItemInfo');
-    const name = info.szFileName || `IMG_${Date.now()}.JPG`;
-    const size = Number(info.size);
-    if (RAW.test(name)) {
-      // RAW stays on the memory card; Lumen stores the JPEG from RAW+JPEG.
-      api.EdsDownloadCancel(ref);
-      if (this.saveTo === 'host') this.emit('notice', { message: 'RAW files can’t be shown in a browser. Set image quality to JPEG or RAW+JPEG.' });
-      return;
-    }
-    const streamOut = [null];
-    check(api.EdsCreateMemoryStream(size, streamOut), 'EdsCreateMemoryStream');
-    const stream = streamOut[0];
+    let pending = null;
     try {
-      check(api.EdsDownload(ref, size, stream), 'EdsDownload');
-      check(api.EdsDownloadComplete(ref), 'EdsDownloadComplete');
-      const data = this.readStream(stream);
+      const info = {};
+      check(api.EdsGetDirectoryItemInfo(ref, info), 'EdsGetDirectoryItemInfo');
+      const name = info.szFileName || `IMG_${Date.now()}.JPG`;
+      const size = Number(info.size);
+      const isRaw = RAW.test(name);
+      pending = this.matchPending(isRaw);
+      if (isRaw) {
+        // RAW stays on the memory card; Lumen stores the JPEG from RAW+JPEG.
+        api.EdsDownloadCancel(ref);
+        this.expectJpeg(pending);
+        return;
+      }
+      const streamOut = [null];
+      check(api.EdsCreateMemoryStream(size, streamOut), 'EdsCreateMemoryStream');
+      const stream = streamOut[0];
+      let data;
+      try {
+        check(api.EdsDownload(ref, size, stream), 'EdsDownload');
+        check(api.EdsDownloadComplete(ref), 'EdsDownloadComplete');
+        data = this.readStream(stream);
+      } finally {
+        api.EdsRelease(stream);
+      }
       if (!data) throw new Error('empty file');
-      const pending = this.pendingCaptures.shift();
-      if (pending) clearTimeout(pending.timer);
+      if (pending) this.dropPending(pending);
+      else if (this.rawTimer) {
+        clearTimeout(this.rawTimer);
+        this.rawTimer = null;
+      }
       this.emit('photo', {
         requestId: pending?.requestId,
         name,
@@ -531,8 +629,12 @@ export class EdsdkBackend extends EventEmitter {
         takenAt: pending?.at ?? Date.now(),
         exposure: pending?.exposure ?? this.exposureSnapshot(),
       });
-    } finally {
-      api.EdsRelease(stream);
+    } catch (e) {
+      api.EdsDownloadCancel(ref);
+      if (pending && this.dropPending(pending)) {
+        this.emit('capture-failed', { requestId: pending.requestId, message: `The photo could not be downloaded: ${e.message}` });
+      }
+      throw e;
     }
   }
 
