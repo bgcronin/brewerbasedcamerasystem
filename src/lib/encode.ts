@@ -50,21 +50,42 @@ function encodeOnMainThread(req: EncodeRequest): Promise<EncodeResult> {
   }).finally(() => req.bitmap.close());
 }
 
+/** A photo takes well under a second to encode; a worker silent for this long has hung. */
+const JOB_TIMEOUT_MS = 30_000;
+
 /**
- * @param original  the source file, when there is one: lets the main thread redo the job if the worker dies,
- *                  because the bitmap itself is handed over to the worker and can't be recovered.
+ * @param original  the source file, when there is one. With it, the bitmap is handed over to the worker
+ *                  (no copy) and the main thread can redo the job from the file if the worker dies.
+ *                  Without it (a live frame, which exists nowhere else) the worker is given a copy and
+ *                  this thread keeps the bitmap, so a failed or hung worker never costs the photo.
  */
 export async function encodeBitmap(req: EncodeRequest, original?: Blob): Promise<EncodeResult> {
   const w = getWorker();
   if (!w) return encodeOnMainThread(req);
+  let jobId = 0;
+  let timer = 0;
   try {
-    return await new Promise<EncodeResult>((resolve, reject) => {
-      const jobId = nextJob++;
+    const result = await new Promise<EncodeResult>((resolve, reject) => {
+      jobId = nextJob++;
       jobs.set(jobId, { resolve, reject });
-      w.postMessage({ ...req, jobId }, [req.bitmap]);
+      timer = window.setTimeout(() => {
+        // Start afresh next time: a hung worker would hold up every photo after this one.
+        workerBroken = false;
+        worker?.terminate();
+        worker = null;
+        for (const j of jobs.values()) j.reject(new Error('The image encoder stopped responding'));
+        jobs.clear();
+      }, JOB_TIMEOUT_MS);
+      if (original) w.postMessage({ ...req, jobId }, [req.bitmap]);
+      else w.postMessage({ ...req, jobId });
     });
+    if (!original) req.bitmap.close();
+    return result;
   } catch (e) {
-    if (!original) throw e;
-    return encodeOnMainThread({ ...req, bitmap: await createImageBitmap(original) });
+    jobs.delete(jobId);
+    if (original) return encodeOnMainThread({ ...req, bitmap: await createImageBitmap(original) });
+    return encodeOnMainThread(req);
+  } finally {
+    window.clearTimeout(timer);
   }
 }

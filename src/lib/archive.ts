@@ -9,7 +9,7 @@
  *         MRN12345_20261103_143212_OS_diffuse.webp
  *         visit.json        ← demographics + per-image metadata
  */
-import { fileExists, getDirPath, isNotFound, readTextFile, renameFile, writeFile } from './fsaccess';
+import { fileExists, fileSize, getDirPath, isNotFound, readTextFile, renameFile, writeFile } from './fsaccess';
 import { annotatedName } from './annotations';
 import { patientFolderName, withSuffix } from './naming';
 import { techniqueLabel, type Annotation, type Capture, type Patient, type Visit } from './types';
@@ -53,6 +53,8 @@ function enqueue<T>(fn: () => Promise<T>): Promise<T> {
   return run;
 }
 
+const byTime = (a: ManifestImage, b: ManifestImage) => a.takenAt.localeCompare(b.takenAt);
+
 function imageEntry(c: Capture, file: string): ManifestImage {
   return {
     file,
@@ -74,30 +76,40 @@ function imageEntry(c: Capture, file: string): ManifestImage {
   };
 }
 
-async function updateManifest(
-  dir: FileSystemDirectoryHandle,
-  patient: Patient,
-  visit: Visit,
-  mutate: (images: ManifestImage[]) => ManifestImage[],
-): Promise<void> {
-  let manifest: Manifest | null = null;
+/** Read visit.json. `text` is kept so an unreadable file can be set aside rather than overwritten. */
+async function readManifest(dir: FileSystemDirectoryHandle): Promise<{ manifest: Manifest | null; text: string | null }> {
   // A locked or unreadable manifest throws here, so the capture stays pending and is retried
   // later, rather than the manifest being rewritten with only this image in it.
   const text = await readTextFile(dir, MANIFEST);
-  if (text) {
-    try {
-      manifest = JSON.parse(text) as Manifest;
-    } catch {
-      // Keep whatever was there for a human to look at instead of overwriting it.
-      await writeFile(dir, `${MANIFEST}.${Date.now()}.bak`, text);
-      manifest = null;
-    }
+  if (!text) return { manifest: null, text: null };
+  try {
+    return { manifest: JSON.parse(text) as Manifest, text };
+  } catch {
+    return { manifest: null, text };
   }
+}
+
+/**
+ * Rewrite visit.json with a changed image list. Pass the patient and visit to refresh the
+ * heading too; without them (a photo being removed after its visit was) the heading is kept.
+ */
+async function updateManifest(
+  dir: FileSystemDirectoryHandle,
+  patient: Patient | null,
+  visit: Visit | null,
+  mutate: (images: ManifestImage[]) => ManifestImage[],
+): Promise<void> {
+  const { manifest, text } = await readManifest(dir);
+  if (text && !manifest) {
+    // Keep whatever was there for a human to look at instead of overwriting it.
+    await writeFile(dir, `${MANIFEST}.${Date.now()}.bak`, text);
+  }
+  if (!manifest && (!patient || !visit)) return; // nothing to tidy and nothing to write a heading from
   const next: Manifest = {
     generator: 'Lumen slit lamp imaging',
     version: 1,
-    patient: { mrn: patient.mrn, firstName: patient.firstName, lastName: patient.lastName, dob: patient.dob, sex: patient.sex || undefined },
-    visit: { date: visit.date, time: visit.time, clinic: visit.clinic, clinician: visit.clinician, reason: visit.reason },
+    patient: patient ? { mrn: patient.mrn, firstName: patient.firstName, lastName: patient.lastName, dob: patient.dob, sex: patient.sex || undefined } : manifest!.patient,
+    visit: visit ? { date: visit.date, time: visit.time, clinic: visit.clinic, clinician: visit.clinician, reason: visit.reason } : manifest!.visit,
     images: mutate(manifest?.images ?? []),
   };
   await writeFile(dir, MANIFEST, JSON.stringify(next, null, 2));
@@ -114,12 +126,30 @@ export function archiveCapture(
   return enqueue(async () => {
     const segs = [patientFolderName(patient), visit.date];
     const dir = await getDirPath(root, segs, true);
+    // Look at visit.json before writing anything: if it can't be read, fail now rather than
+    // leave a photo on disk that the next attempt would write a second time.
+    const listed = new Set(((await readManifest(dir)).manifest?.images ?? []).map((i) => i.file));
     let name = capture.fileName;
-    for (let n = 2; await fileExists(dir, name); n++) name = withSuffix(capture.fileName, n);
+    for (let n = 2; await fileExists(dir, name); n++) {
+      // Not in visit.json, and either the same size or empty: our own file from an attempt
+      // that failed part-way. Write over it instead of adding "_2".
+      const size = listed.has(name) ? null : await fileSize(dir, name);
+      if (size === blob.size || size === 0) break;
+      name = withSuffix(capture.fileName, n);
+    }
     await writeFile(dir, name, blob);
     await updateManifest(dir, patient, visit, (imgs) => [...imgs.filter((i) => i.file !== name), imageEntry(capture, name)]);
     return [...segs, name].join('/');
   });
+}
+
+/** True when the file on disk is the one a capture called `wanted` would have been written as (allowing a "_2" suffix). */
+export function isArchivedAs(onDisk: string, wanted: string): boolean {
+  if (onDisk === wanted) return true;
+  const dot = wanted.lastIndexOf('.');
+  const stem = dot < 0 ? wanted : wanted.slice(0, dot);
+  const ext = dot < 0 ? '' : wanted.slice(dot);
+  return onDisk.startsWith(stem + '_') && onDisk.endsWith(ext) && /^\d+$/.test(onDisk.slice(stem.length + 1, onDisk.length - ext.length));
 }
 
 /** Keep visit.json in step with edits (star, note, eye, technique). */
@@ -129,20 +159,32 @@ export function updateArchivedMetadata(root: FileSystemDirectoryHandle, patient:
     const segs = capture.archivedPath.split('/');
     const file = segs.pop()!;
     const dir = await getDirPath(root, segs, false);
-    await updateManifest(dir, patient, visit, (imgs) => imgs.map((i) => (i.file === file ? imageEntry(capture, file) : i)));
+    const entry = imageEntry(capture, file);
+    // An entry for the same photo under a name that no longer exists (a rename that was cut
+    // short before visit.json could be updated) is dropped rather than left to mislead.
+    const gone = new Set<string>();
+    for (const i of (await readManifest(dir)).manifest?.images ?? []) {
+      if (i.file !== file && i.takenAt === entry.takenAt && !(await fileExists(dir, i.file))) gone.add(i.file);
+    }
+    await updateManifest(dir, patient, visit, (imgs) => [...imgs.filter((i) => i.file !== file && !gone.has(i.file)), entry].sort(byTime));
   });
 }
 
-/** Rename the archived file so its name matches a new eye / technique label. Returns the new relative path. */
+/**
+ * Rename the archived file so its name matches a new eye / technique label.
+ * `saved` is called with the new paths as soon as the files are renamed and before visit.json is
+ * touched, so the database can never be left pointing at a name that no longer exists.
+ */
 export function renameArchived(
   root: FileSystemDirectoryHandle,
   patient: Patient,
   visit: Visit,
   capture: Capture,
   newFileName: string,
-): Promise<{ archivedPath: string; annotatedPath?: string } | null> {
+  saved: (paths: { archivedPath: string; annotatedPath?: string }) => Promise<void>,
+): Promise<void> {
   return enqueue(async () => {
-    if (!capture.archivedPath) return null;
+    if (!capture.archivedPath) return;
     const segs = capture.archivedPath.split('/');
     const oldName = segs.pop()!;
     const dir = await getDirPath(root, segs, false);
@@ -154,15 +196,15 @@ export function renameArchived(
     if (annotatedPath) {
       const oldAnnotated = annotatedPath.split('/').pop()!;
       try {
-        await renameFile(dir, oldAnnotated, annotatedName(name));
+        await renameFile(dir, oldAnnotated, annotatedName(name), true);
         annotatedPath = [...segs, annotatedName(name)].join('/');
       } catch (e) {
         if (!isNotFound(e)) throw e;
         annotatedPath = undefined;
       }
     }
-    await updateManifest(dir, patient, visit, (imgs) => imgs.map((i) => (i.file === oldName ? imageEntry({ ...capture, annotatedPath }, name) : i)));
-    return { archivedPath: [...segs, name].join('/'), annotatedPath };
+    await saved({ archivedPath: [...segs, name].join('/'), annotatedPath });
+    await updateManifest(dir, patient, visit, (imgs) => [...imgs.filter((i) => i.file !== oldName && i.file !== name), imageEntry({ ...capture, annotatedPath }, name)]);
   });
 }
 
@@ -194,10 +236,10 @@ export function syncAnnotatedCopy(root: FileSystemDirectoryHandle, patient: Pati
   });
 }
 
-export function removeArchived(root: FileSystemDirectoryHandle, patient: Patient, visit: Visit, capture: Capture): Promise<void> {
+/** Remove a photo (and its annotated copy) from the archive by path alone; its visit may no longer exist. */
+export function removeArchived(root: FileSystemDirectoryHandle, archivedPath: string): Promise<void> {
   return enqueue(async () => {
-    if (!capture.archivedPath) return;
-    const segs = capture.archivedPath.split('/');
+    const segs = archivedPath.split('/');
     const file = segs.pop()!;
     let dir: FileSystemDirectoryHandle;
     try {
@@ -212,6 +254,18 @@ export function removeArchived(root: FileSystemDirectoryHandle, patient: Patient
       if (!isNotFound(e)) throw e; // already deleted by hand: still tidy the manifest
     }
     await dir.removeEntry(annotatedName(file)).catch(() => undefined);
-    await updateManifest(dir, patient, visit, (imgs) => imgs.filter((i) => i.file !== file));
+    await updateManifest(dir, null, null, (imgs) => imgs.filter((i) => i.file !== file));
   });
+}
+
+/** Is the file a capture was archived as present under this root? (Used after the archive folder is changed.) */
+export async function archivedFileExists(root: FileSystemDirectoryHandle, archivedPath: string): Promise<boolean> {
+  const segs = archivedPath.split('/');
+  const file = segs.pop()!;
+  try {
+    return await fileExists(await getDirPath(root, segs, false), file);
+  } catch (e) {
+    if (isNotFound(e)) return false;
+    throw e;
+  }
 }

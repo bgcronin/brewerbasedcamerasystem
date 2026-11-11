@@ -71,8 +71,8 @@ export const useCamera = create<CameraState>((set, get) => ({
       return false;
     }
     lastResolution = resolution;
-    const generation = ++startGeneration;
     get().stop();
+    const generation = ++startGeneration;
     set({ status: 'starting', error: undefined, wantedDeviceId: deviceId });
     try {
       const stream = await openCamera(deviceId, resolution);
@@ -88,6 +88,11 @@ export const useCamera = create<CameraState>((set, get) => ({
         set({ status: 'error', error: 'The camera was disconnected. Reconnect the cable — Lumen will pick it up again automatically.', stream: null, info: null });
       });
       const devices = await listVideoDevices();
+      if (generation !== startGeneration) {
+        // Stopped, or started again, while the device list was loading.
+        stream.getTracks().forEach((t) => t.stop());
+        return false;
+      }
       const dev = devices.find((d) => d.deviceId === settings.deviceId);
       set({
         stream,
@@ -111,6 +116,8 @@ export const useCamera = create<CameraState>((set, get) => ({
   },
 
   stop() {
+    // Cancels a start() that is still opening the camera, so it can't come alive after this.
+    startGeneration++;
     const { stream, video } = get();
     stream?.getTracks().forEach((t) => t.stop());
     if (video) video.srcObject = null;

@@ -122,7 +122,9 @@ The fallback when Camera Link can't be used. Canon's free **EOS Utility 3** save
 3. Set the camera to **JPEG (L, fine)**. RAW + JPEG also works (Lumen takes the JPEG). Browsers can't display RAW or HEIF.
 4. In Lumen: **Camera source → Choose the EOS Utility folder…** and pick the same folder.
 
-Now every shot, whether from the camera's shutter, a remote release or a foot switch wired to the camera, appears in Lumen within a second, filed to the selected patient and eye. Photos that arrive before you've chosen a patient are held. Pick the patient, then file them with one click. Original files stay in the EOS folder unless you turn on *Settings → Tidy the Canon folder*.
+Now every shot, whether from the camera's shutter, a remote release or a foot switch wired to the camera, appears in Lumen within a couple of seconds. It is filed to the patient and eye that were selected **when the photo started to arrive**, so moving on to the next patient straight after the shutter cannot mislabel it; the capture panel says "Photo arriving…" in the meantime.
+
+Photos that arrive before you've chosen a patient are held in a banner over the live view. Pick the patient, then file them with one click. The same goes for photos taken while Lumen was closed or waiting for permission: they are never filed to whoever happens to be selected. Original files stay in the EOS folder unless you turn on *Settings → Tidy the Canon folder*, and even then only once the photo is safely in the archive folder.
 
 ### Foot switch
 
@@ -194,7 +196,9 @@ Archive/
       visit.json         ← patient, visit and per-image metadata (eye, technique, time, diagnoses, notes, marks)
 ```
 
-- Photos are written to the archive the moment they're taken. If the folder is unavailable (network share down, or permission needed after a restart), photos are kept safely in the browser and synced when it's back. The top-bar pill shows the status and how many are waiting.
+- Photos are written to the archive the moment they're taken. If the folder is unavailable (network share down, or permission needed after a restart), photos are kept safely in the browser and synced when it's back. The same goes for relabels, notes, diagnoses and deletions made in the meantime. The top-bar pill shows the status and how many are waiting; Lumen retries with the next photo and at each start.
+- Choosing a different archive folder fills it in: any photo that isn't in the new folder is written there.
+- Open Lumen in one window at a time. A second window says so and waits, so that the camera folder and the archive are never handled twice.
 - The browser copy belongs to that browser profile on that PC. Treat the **archive folder as the record**: put it on backed-up storage.
 - Encoding runs in a background thread, so the live view never stutters, even for large Canon files.
 
@@ -235,10 +239,12 @@ tests/            unit tests (Vitest) and end-to-end tests (Playwright)
 ```
 
 ```bash
-npm test            # unit tests: CSV, dates, names, column mapping, ZIP, database import, diagnoses, search, annotations
+npm test            # unit tests: CSV, dates, names, column mapping, ZIP, database import, diagnoses, search, annotations,
+                    # and tests/integrity.test.ts: filing, relabelling, deleting and archiving against a fake folder that can fail
 npm run typecheck
 node tests/e2e/smoke.cjs   # with `npm start` running; needs Playwright + Chromium
 node tests/e2e/features.cjs  # with `npm start` running; labels, Library search, annotation and the archive copy
+node tests/e2e/safety.cjs    # with `npm start` running; deletes survive a reload, and the second-window guard
 node tests/e2e/canon.cjs   # after `npm run build`; starts the helper's simulated EOS 60D itself
 node tests/e2e/scan.cjs    # with `npm start` running; imports a printed list as PDF and as a photo (OCR)
 cd helper && npm test      # runs the real Canon SDK bindings against a stand-in library (needs a C compiler)

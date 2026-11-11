@@ -485,10 +485,10 @@ function FilmTile({ c, index, ids, isNew }: { c: Capture; index: number; ids: st
         </span>
       )}
       <div className="film-actions">
-        <button type="button" title={c.starred ? 'Unstar' : 'Star'} onClick={() => void updateCapture(c.id, { starred: !c.starred })}>
+        <button type="button" title={c.starred ? 'Unstar' : 'Star'} aria-label={c.starred ? 'Unstar' : 'Star'} onClick={() => void updateCapture(c.id, { starred: !c.starred })}>
           <Icon name="star" size={14} fill={c.starred ? 'currentColor' : 'none'} />
         </button>
-        <button type="button" title="Delete" onClick={() => deleteCapture(c.id)}>
+        <button type="button" title="Delete" aria-label="Delete" onClick={() => deleteCapture(c.id)}>
           <Icon name="trash" size={14} />
         </button>
       </div>

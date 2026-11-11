@@ -84,6 +84,16 @@ export interface Capture {
   /** Archive path of the flattened "_annotated" copy, and the annotationsAt it reflects. */
   annotatedPath?: string;
   annotatedAt?: number;
+  /**
+   * The archive copy (file name or visit.json) no longer matches this record,
+   * for example a relabel made while the folder was unavailable. Redone at the next sync.
+   */
+  archiveDirty?: boolean;
+  /**
+   * Set the moment Delete is pressed. The photo is hidden straight away and removed for
+   * good when the undo window closes (or at the next start, if Lumen was closed first).
+   */
+  deletedAt?: number;
 }
 
 export interface StoredImage {

@@ -1,17 +1,17 @@
 import { create } from 'zustand';
 import { renderAnnotated } from '../lib/annotations';
-import { archiveCapture, removeArchived, renameArchived, syncAnnotatedCopy, updateArchivedMetadata } from '../lib/archive';
+import { archiveCapture, archivedFileExists, isArchivedAs, removeArchived, renameArchived, syncAnnotatedCopy, updateArchivedMetadata } from '../lib/archive';
 import * as db from '../lib/db';
 import { addDiagnosis, hasDiagnosis, removeDiagnosis, sameDiagnosis } from '../lib/diagnoses';
 import { todayISO, toISODate } from '../lib/dates';
 import { encodeBitmap, warmEncoder } from '../lib/encode';
-import { fsSupported, hasPermission, pickDirectory, requestPermission } from '../lib/fsaccess';
+import { fsSupported, hasPermission, isNotFound, pickDirectory, requestPermission } from '../lib/fsaccess';
 import { uid } from '../lib/id';
 import { displayName } from '../lib/names';
 import type { ImportedRecord, ImportResult } from '../lib/importers';
 import { captureFileName, patientFolderName } from '../lib/naming';
 import { playShutter } from '../lib/sound';
-import { FolderWatcher } from '../lib/tether';
+import { FolderWatcher, TETHER_LAST_ATTEMPT } from '../lib/tether';
 import { forgetThumb, primeThumb } from '../lib/thumbs';
 import {
   DEFAULT_SETTINGS,
@@ -86,8 +86,11 @@ interface AppState {
   flashTick: number;
   lastCaptureId: string | null;
   archive: FolderState & { pending: number };
-  tether: FolderState & { watching: boolean; lastAt?: number };
+  /** `arriving`: photos the camera folder has started to receive but that are not complete yet. */
+  tether: FolderState & { watching: boolean; lastAt?: number; arriving: number };
   held: HeldPhoto[];
+  /** Lumen is already open in another window, which is the one filing photos. */
+  secondary: boolean;
   /** Patient ids in the order the sidebar is showing them (after search / filter), for ↑ ↓. */
   visiblePatientIds: string[] | null;
   toasts: Toast[];
@@ -116,8 +119,9 @@ const initial: AppState = {
   flashTick: 0,
   lastCaptureId: null,
   archive: { status: fsSupported ? 'none' : 'unsupported', pending: 0 },
-  tether: { status: fsSupported ? 'none' : 'unsupported', watching: false },
+  tether: { status: fsSupported ? 'none' : 'unsupported', watching: false, arriving: 0 },
   held: [],
+  secondary: false,
   visiblePatientIds: null,
   toasts: [],
   sheet: null,
@@ -132,8 +136,27 @@ const set = useApp.setState;
 let archiveHandle: FileSystemDirectoryHandle | null = null;
 let tetherHandle: FileSystemDirectoryHandle | null = null;
 let watcher: FolderWatcher | null = null;
+/** Photos inside their undo window after Delete: id → the timer that makes the delete final. */
 const pendingDeletes = new Map<string, number>();
+/** Photos whose archive file is being written right now. */
+const archiving = new Set<string>();
 let rawHintShown = false;
+
+/** What a photo is filed with: fixed at the moment it is taken, whatever is selected by the time it has been processed. */
+interface Labels {
+  patient: Patient | null;
+  eye: Eye;
+  technique: string | null;
+  diagnoses: string[];
+}
+function currentLabels(): Labels {
+  const s = get();
+  return { patient: s.patient, eye: s.eye, technique: s.technique, diagnoses: s.diagnoses };
+}
+/** Labels for `ingest`: the diagnoses at the press only matter if that patient is no longer on screen. */
+function labelInput(l: Labels) {
+  return { eye: l.eye, technique: l.technique, diagnoses: l.patient && get().activePatientId === l.patient.id ? undefined : l.diagnoses };
+}
 
 /* ───────────────────────── toasts ───────────────────────── */
 
@@ -156,11 +179,19 @@ export function dismissToast(id: string): void {
 /* ───────────────────────── boot ───────────────────────── */
 
 export async function init(): Promise<void> {
-  warmEncoder();
   const saved = await db.kvGet<Partial<Settings>>('settings');
   const settings = { ...DEFAULT_SETTINGS, ...saved, transforms: { ...(saved?.transforms ?? {}) } };
-  set({ settings });
   applyTheme(settings.theme);
+
+  // One window files photos at a time. A second window would watch the camera folder and
+  // write to the archive as well, filing every photo twice.
+  if (!(await claimWindow(false))) {
+    set({ secondary: true, ready: true });
+    return;
+  }
+
+  warmEncoder();
+  set({ settings });
 
   if (fsSupported) {
     archiveHandle = (await db.kvGet<FileSystemDirectoryHandle>('archiveHandle')) ?? null;
@@ -187,15 +218,53 @@ export async function init(): Promise<void> {
     });
   }
 
+  // Finish what the last session left: deletes still in their undo window when the window
+  // was closed, and photos that were waiting for a patient.
+  for (const c of await db.deletedCaptures()) await commitDelete(c.id);
+  const waiting = await db.kvGet<HeldPhoto[]>('heldPhotos');
+  if (waiting?.length) set({ held: waiting });
+  useApp.subscribe((s, prev) => {
+    if (s.held !== prev.held) void db.kvSet('heldPhotos', s.held).catch(() => undefined);
+  });
+
   await Promise.all([loadRows(), refreshPending(), refreshAllPatients()]);
-  // Finish anything a previous session left unwritten (photos, or marks drawn just before closing).
-  if (get().archive.status === 'connected' && get().archive.pending > 0) void syncArchive(true);
+  // Photos, relabels, marks and removals that never reached the archive folder are put right now.
+  if (get().archive.status === 'connected') void syncArchive(true);
   const lastPatient = await db.kvGet<{ id: string; date: string }>('lastPatient');
   if (lastPatient && lastPatient.date === todayISO()) await selectPatient(lastPatient.id);
   set({ ready: true });
 
   // Ask the browser not to evict our data under storage pressure.
   void navigator.storage?.persist?.().catch(() => undefined);
+}
+
+/**
+ * Hold (or take) the right to be the working Lumen window. Resolves false when another
+ * window already has it. If this window later loses it, it stops watching and filing.
+ */
+function claimWindow(steal: boolean): Promise<boolean> {
+  const locks = typeof navigator !== 'undefined' ? navigator.locks : undefined;
+  if (!locks) return Promise.resolve(true);
+  return new Promise<boolean>((resolve) => {
+    locks
+      .request('lumen-window', steal ? { steal: true } : { ifAvailable: true }, (lock) => {
+        resolve(!!lock);
+        // Kept for as long as this window lives.
+        return lock ? new Promise<void>(() => undefined) : undefined;
+      })
+      .catch(() => {
+        // Another window took over ("Use this window" was chosen there).
+        watcher?.stop();
+        watcher = null;
+        set((s) => ({ secondary: true, lightbox: null, compare: null, sheet: null, tether: { ...s.tether, watching: false } }));
+      });
+  });
+}
+
+/** Make this the working window (the other one steps aside), then start afresh. */
+export async function takeOverWindow(): Promise<void> {
+  await claimWindow(true);
+  window.location.reload();
 }
 
 let mediaQuery: MediaQueryList | null = null;
@@ -296,11 +365,24 @@ export async function selectPatient(id: string | null): Promise<void> {
 
 export function selectAdjacent(delta: 1 | -1): void {
   const { rows, activePatientId, visiblePatientIds } = get();
-  const ids = visiblePatientIds ?? rows.map((r) => r.patient.id);
+  const all = rows.map((r) => r.patient.id);
+  const ids = visiblePatientIds ?? all;
   if (!ids.length) return;
   const i = ids.indexOf(activePatientId ?? '');
-  const next = i < 0 ? (delta > 0 ? 0 : ids.length - 1) : Math.min(ids.length - 1, Math.max(0, i + delta));
-  void selectPatient(ids[next]);
+  if (i >= 0) {
+    void selectPatient(ids[Math.min(ids.length - 1, Math.max(0, i + delta))]);
+    return;
+  }
+  // The active patient is not in the list as filtered (under "To do" they leave it with their
+  // first photo): carry on from their place in the day, not from the top.
+  const at = all.indexOf(activePatientId ?? '');
+  if (at < 0) {
+    void selectPatient(delta > 0 ? ids[0] : ids[ids.length - 1]);
+    return;
+  }
+  const onward = delta > 0 ? all.slice(at + 1) : all.slice(0, at).reverse();
+  const next = onward.find((id) => ids.includes(id));
+  if (next) void selectPatient(next);
 }
 
 export async function importToList(records: ImportedRecord[], defaultDate: string, source: string): Promise<void> {
@@ -344,15 +426,18 @@ export async function savePatient(form: PatientForm, patientId?: string, visitId
     if (existingWithMrn && existingWithMrn.id !== patientId) {
       throw new Error(`${form.mrn} already belongs to ${displayName(existingWithMrn)}. Two patients can’t share an MRN.`);
     }
-    patient = { ...existing, mrn: form.mrn, firstName: form.firstName, lastName: form.lastName, dob: form.dob, sex: form.sex, notes: form.notes };
+    // Only the edited fields are written, so nothing else on the record (its archive folder, for one) can be lost.
+    const fields = { mrn: form.mrn, firstName: form.firstName, lastName: form.lastName, dob: form.dob, sex: form.sex, notes: form.notes };
+    patient = (await db.patchPatient(patientId, fields)) ?? { ...existing, ...fields };
   } else if (existingWithMrn) {
     // Same MRN as a known patient: add the visit to their record rather than renaming them.
-    patient = { ...existingWithMrn, dob: existingWithMrn.dob ?? form.dob, sex: existingWithMrn.sex || form.sex };
+    const fields = { dob: existingWithMrn.dob ?? form.dob, sex: existingWithMrn.sex || form.sex };
+    patient = (await db.patchPatient(existingWithMrn.id, fields)) ?? { ...existingWithMrn, ...fields };
     toast({ message: `${form.mrn} is already ${displayName(existingWithMrn)}`, detail: 'Their existing record was used. Edit it if the details need changing.', duration: 7000 });
   } else {
     patient = { id: uid(), mrn: form.mrn, firstName: form.firstName, lastName: form.lastName, dob: form.dob, sex: form.sex, notes: form.notes, createdAt: now, updatedAt: now };
+    await db.putPatient(patient);
   }
-  await db.putPatient(patient);
 
   // Editing a patient must never add them to a day's list; only adding (or editing a listed visit) touches visits.
   const visit = visitId ? await db.getVisit(visitId) : !patientId ? await db.ensureVisit(patient.id, get().date, 'manual') : undefined;
@@ -364,7 +449,10 @@ export async function savePatient(form: PatientForm, patientId?: string, visitId
 }
 
 export async function removeFromList(visitId: string): Promise<void> {
-  const caps = (await db.capturesForDate(get().date)).filter((c) => c.visitId === visitId && !pendingDeletes.has(c.id));
+  // A photo deleted a moment ago could still come back with Undo. Make those deletes final first,
+  // so a restored photo can never be left belonging to a visit that no longer exists.
+  for (const c of await db.deletedCaptures()) if (c.visitId === visitId) await commitDelete(c.id);
+  const caps = (await db.capturesForDate(get().date)).filter((c) => c.visitId === visitId);
   if (caps.length) {
     toast({ tone: 'warning', message: 'This visit has photos', detail: 'Delete the photos first to remove the patient from the list.' });
     return;
@@ -412,7 +500,7 @@ interface IngestInput {
 export async function ingest(input: IngestInput, patientOverride?: Patient): Promise<Capture | null> {
   const s = get();
   const patient = patientOverride ?? s.patient;
-  if (!patient) return null;
+  if (!patient || s.secondary) return null;
   const { settings } = s;
   const eye = input.eye ?? s.eye;
   const technique = input.technique !== undefined ? input.technique : s.technique;
@@ -475,18 +563,26 @@ export async function ingest(input: IngestInput, patientOverride?: Patient): Pro
     }));
     void loadRows();
 
-    if (archiveHandle && get().archive.status === 'connected') {
+    // A folder that failed last time is tried again with every photo, so it recovers by itself.
+    const status = get().archive.status;
+    if (archiveHandle && (status === 'connected' || status === 'error')) {
+      archiving.add(capture.id);
       try {
         const owner = await pinArchiveFolder(patient);
         const path = await archiveCapture(archiveHandle, owner, visit, capture, full);
-        const stored = await patchCapture(capture.id, { archivedPath: path });
-        // A label, note or star added while the file was being written belongs in visit.json too.
-        const meta = (x: Capture) => JSON.stringify([x.diagnoses ?? [], x.note ?? '', !!x.starred]);
-        if (stored && meta(stored) !== meta(capture)) await updateArchivedMetadata(archiveHandle, owner, visit, stored);
+        await afterArchived(capture, path);
+        if (status === 'error') {
+          set((st) => ({ archive: { ...st.archive, status: 'connected' } }));
+          void syncArchive(true);
+        }
       } catch (e) {
-        set((st) => ({ archive: { ...st.archive, status: 'error' } }));
-        toast({ tone: 'error', message: 'Couldn’t write to the archive folder', detail: `Saved safely in Lumen. ${(e as Error).message}` });
+        if (status !== 'error') {
+          set((st) => ({ archive: { ...st.archive, status: 'error' } }));
+          toast({ tone: 'error', message: 'Couldn’t write to the archive folder', detail: `Saved safely in Lumen. ${(e as Error).message}` });
+        }
         void refreshPending();
+      } finally {
+        archiving.delete(capture.id);
       }
     } else {
       void refreshPending();
@@ -518,22 +614,50 @@ function findCapture(id: string): Capture | undefined {
   return s.captures.find((x) => x.id === id) ?? s.library?.find((x) => x.id === id);
 }
 
-/** The archive folder is chosen once per patient and then kept, whatever later corrections say. */
+/**
+ * The archive folder is chosen once per patient and then kept, whatever later corrections say.
+ * Only that one field is written, on the record as it is in the database now.
+ */
 async function pinArchiveFolder(patient: Patient): Promise<Patient> {
   if (patient.archiveFolder) return patient;
-  const pinned = { ...patient, archiveFolder: patientFolderName(patient) };
-  await db.putPatient(pinned);
-  set((st) => (st.patient?.id === patient.id ? { patient: pinned } : {}));
+  // Photos archived before folders were fixed stay where they are: carry on in the same folder.
+  const earlier = (await db.capturesForPatient(patient.id)).find((c) => c.archivedPath)?.archivedPath?.split('/')[0];
+  const pinned = (await db.pinArchiveFolder(patient.id, earlier ?? patientFolderName(patient))) ?? patient;
+  if (pinned.archiveFolder) {
+    const archiveFolder = pinned.archiveFolder;
+    set((st) => (st.patient?.id === patient.id ? { patient: { ...st.patient, archiveFolder } } : {}));
+  }
   return pinned;
+}
+
+/** What visit.json and the file name say about a photo. */
+const archiveMeta = (x: Capture) => JSON.stringify([x.fileName, x.eye, x.technique ?? '', x.diagnoses ?? [], x.note ?? '', !!x.starred]);
+
+/** Record where a photo was written, and put right anything that changed (or was deleted) while it was being written. */
+async function afterArchived(written: Capture, path: string): Promise<void> {
+  const stored = await patchCapture(written.id, { archivedPath: path });
+  if (!stored) {
+    // Deleted for good while its file was still being written: the file must go too.
+    await queueRemoval(path);
+    void processArchiveRemovals();
+    return;
+  }
+  if (stored.deletedAt) return; // inside its undo window; if the delete stands, the file is removed then
+  if (archiveMeta(stored) !== archiveMeta(written)) {
+    await patchCapture(written.id, { archiveDirty: true });
+    await inCaptureOrder(() => reconcileArchive(written.id)).catch(() => undefined);
+  }
 }
 
 /** Fire the shutter for the live camera. */
 export async function captureFromLive(grab: () => Promise<ImageBitmap>, deviceLabel: string | undefined): Promise<void> {
-  const s = get();
-  if (!s.patient) {
+  // Who and which eye are fixed now, at the press, not when the frame has been grabbed and encoded.
+  const labels = currentLabels();
+  if (!labels.patient) {
     toast({ tone: 'warning', message: 'Choose a patient first', detail: 'Pick someone from the list on the left.' });
     return;
   }
+  const takenAt = Date.now();
   let bitmap: ImageBitmap;
   try {
     bitmap = await grab();
@@ -542,46 +666,102 @@ export async function captureFromLive(grab: () => Promise<ImageBitmap>, deviceLa
     return;
   }
   set((st) => ({ flashTick: st.flashTick + 1 }));
-  if (s.settings.shutterSound) playShutter();
-  await ingest({ bitmap, source: 'live', deviceLabel, transform: transformFor(deviceLabel) });
+  if (get().settings.shutterSound) playShutter();
+  await ingest({ bitmap, source: 'live', deviceLabel, transform: transformFor(deviceLabel), takenAt, ...labelInput(labels) }, labels.patient);
 }
 
 export async function importFiles(files: File[]): Promise<void> {
-  const s = get();
-  if (!s.patient) {
+  // The whole batch goes to the patient, eye and illumination selected when it was dropped,
+  // even if the selection moves on while the files are still being read.
+  const labels = currentLabels();
+  if (!labels.patient) {
     toast({ tone: 'warning', message: 'Choose a patient first' });
     return;
   }
   const images = files.filter((f) => /^image\/(jpeg|png|webp)$/.test(f.type) || /\.(jpe?g|png|webp)$/i.test(f.name));
+  let added = 0;
   for (const f of images) {
     // A file's own timestamp is kept only if it was taken today; older files are filed with the time they were added.
     const takenToday = f.lastModified && toISODate(new Date(f.lastModified)) === todayISO();
-    await ingest({ original: f, source: 'file', transform: { rotate: 0, flipH: false, flipV: false }, takenAt: takenToday ? f.lastModified : Date.now() });
+    const c = await ingest(
+      { original: f, source: 'file', transform: { rotate: 0, flipH: false, flipV: false }, takenAt: takenToday ? f.lastModified : Date.now(), ...labelInput(labels) },
+      labels.patient,
+    );
+    if (c) added++;
   }
-  if (images.length) toast({ tone: 'success', message: `${images.length} photo${images.length === 1 ? '' : 's'} added` });
+  if (added) toast({ tone: 'success', message: `${added} photo${added === 1 ? '' : 's'} added to ${displayName(labels.patient)}` });
   if (images.length < files.length) toast({ tone: 'warning', message: 'Some files were skipped', detail: 'Only JPEG, PNG and WebP images can be imported.' });
 }
 
-export async function updateCapture(id: string, patch: Partial<Pick<Capture, 'eye' | 'technique' | 'note' | 'starred' | 'diagnoses'>>): Promise<void> {
-  const c = findCapture(id) ?? (await db.getCapture(id));
-  if (!c) return;
-  const [patient, visit] = await Promise.all([db.getPatient(c.patientId), db.getVisit(c.visitId)]);
-  // `'technique' in patch` so that clearing the technique also renames the file.
-  const relabelled = (patch.eye && patch.eye !== c.eye) || ('technique' in patch && patch.technique !== c.technique);
-  const merged = { ...c, ...patch };
-  // The eye and technique are part of the file name, so a relabel renames the file too.
-  const fileName = relabelled && patient ? captureFileName(patient, { takenAt: merged.takenAt, eye: merged.eye, technique: merged.technique }, merged.mime) : merged.fileName;
-  const next = (await patchCapture(id, { ...patch, fileName })) ?? { ...merged, fileName };
-  if (!archiveHandle || !next.archivedPath || get().archive.status !== 'connected' || !patient || !visit) return;
-  try {
-    if (relabelled) {
-      const renamed = await renameArchived(archiveHandle, patient, visit, next, fileName);
-      if (renamed) await patchCapture(id, renamed);
-    } else {
-      await updateArchivedMetadata(archiveHandle, patient, visit, next);
+// Changes to a photo are applied strictly one after another, each starting from the record as
+// the last one left it: two quick relabels can never cross, in the database or in the archive.
+let captureWork: Promise<unknown> = Promise.resolve();
+function inCaptureOrder<T>(job: () => Promise<T>): Promise<T> {
+  const run = captureWork.then(job, job);
+  captureWork = run.catch(() => undefined);
+  return run;
+}
+
+type CaptureEdit = Partial<Pick<Capture, 'eye' | 'technique' | 'note' | 'starred' | 'diagnoses'>>;
+
+export function updateCapture(id: string, patch: CaptureEdit): Promise<void> {
+  // Shown at once; the stored record and the archive follow in order.
+  const show = (x: Capture) => (x.id === id ? { ...x, ...patch } : x);
+  set((st) => ({ captures: st.captures.map(show), library: st.library ? st.library.map(show) : st.library }));
+  return inCaptureOrder(async () => {
+    const c = await db.getCapture(id);
+    if (!c) return;
+    const merged = { ...c, ...patch };
+    // The eye and technique are part of the file name, so a relabel renames the file too.
+    const relabelled = merged.eye !== c.eye || merged.technique !== c.technique;
+    const patient = relabelled ? await db.getPatient(c.patientId) : undefined;
+    const fileName = patient ? captureFileName(patient, { takenAt: merged.takenAt, eye: merged.eye, technique: merged.technique }, merged.mime) : c.fileName;
+    // The archive copy is marked out of date in the same write as the change itself, so the two can never part company.
+    await patchCapture(id, { ...patch, fileName, archiveDirty: c.archivedPath ? true : c.archiveDirty });
+    try {
+      await reconcileArchive(id);
+    } catch (e) {
+      warnArchiveBehind(e);
     }
+    void refreshPending();
+  });
+}
+
+let lastArchiveWarning = 0;
+function warnArchiveBehind(e: unknown): void {
+  if (Date.now() - lastArchiveWarning < 15_000) return;
+  lastArchiveWarning = Date.now();
+  toast({ tone: 'warning', message: 'Archive copy not updated yet', detail: `The change is saved in Lumen and will be written to the folder at the next sync. ${(e as Error)?.message ?? ''}` });
+}
+
+/**
+ * Bring a photo's archive copy into line with its record: the file name (eye and technique are
+ * part of it) and its entry in visit.json. Works from the record as it is now, not from what a
+ * particular edit asked for, so it is safe to run late, twice, or after several edits at once.
+ * If the folder is unavailable the photo simply stays marked and the next sync does it.
+ */
+async function reconcileArchive(id: string): Promise<void> {
+  if (!archiveHandle || get().archive.status !== 'connected') return;
+  const c = await db.getCapture(id);
+  if (!c?.archivedPath || !c.archiveDirty) return;
+  const [patient, visit] = await Promise.all([db.getPatient(c.patientId), db.getVisit(c.visitId)]);
+  if (!patient || !visit) return;
+  try {
+    const onDisk = c.archivedPath.split('/').pop()!;
+    if (isArchivedAs(onDisk, c.fileName)) {
+      await updateArchivedMetadata(archiveHandle, patient, visit, c);
+    } else {
+      // The new path is saved the moment the file has its new name, before visit.json is touched.
+      await renameArchived(archiveHandle, patient, visit, c, c.fileName, async (paths) => {
+        await patchCapture(id, paths);
+      });
+    }
+    await patchCapture(id, { archiveDirty: undefined });
   } catch (e) {
-    toast({ tone: 'warning', message: 'Archive copy not updated', detail: `The change is saved in Lumen. ${(e as Error).message}` });
+    if (!isNotFound(e)) throw e;
+    // The archive copy was moved or deleted by hand. Forget it: the next sync writes a fresh one.
+    await patchCapture(id, { archivedPath: undefined, annotatedPath: undefined, annotatedAt: undefined, archiveDirty: undefined });
+    void syncArchive(true);
   }
 }
 
@@ -735,6 +915,8 @@ export async function loadLibrary(): Promise<void> {
   void refreshAllPatients();
 }
 
+const UNDO_MS = 6500;
+
 /** Delete with a short undo window, Apple-style. */
 export function deleteCapture(id: string): void {
   const c = findCapture(id);
@@ -745,89 +927,108 @@ export function deleteCapture(id: string): void {
     lastCaptureId: st.lastCaptureId === id ? null : st.lastCaptureId,
     rows: st.rows.map((r) => (r.visit.id === c.visitId ? { ...r, count: Math.max(0, r.count - 1) } : r)),
   }));
-  const timer = window.setTimeout(() => void commitDelete(c), 6500);
-  pendingDeletes.set(id, timer);
-  toast({
-    message: 'Photo deleted',
-    action: {
-      label: 'Undo',
-      run: () => {
-        window.clearTimeout(timer);
-        pendingDeletes.delete(id);
-        set((st) => ({
-          library: st.library && !st.library.some((x) => x.id === c.id) ? [...st.library, c] : st.library,
-          ...(st.activePatientId === c.patientId && !st.captures.some((x) => x.id === c.id)
-            ? { captures: [...st.captures, c].sort((a, b) => a.takenAt - b.takenAt) }
-            : {}),
-        }));
-        void loadRows();
-      },
-    },
-  });
+  // Marked in the database straight away: closing or reloading the window during the undo
+  // period can no longer bring the photo back. The mark is made final when the period ends,
+  // or at the next start.
+  void db.patchCapture(id, { deletedAt: Date.now() });
+  pendingDeletes.set(id, window.setTimeout(() => void commitDelete(id), UNDO_MS));
+  toast({ message: 'Photo deleted', action: { label: 'Undo', run: () => void undoDelete(id) }, duration: UNDO_MS });
 }
 
-interface ArchiveRemoval {
-  capture: Capture;
-  patientId: string;
-  visitId: string;
-}
-
-async function commitDelete(c: Capture): Promise<void> {
-  pendingDeletes.delete(c.id);
-  await db.deleteCapture(c.id);
-  forgetThumb(c.id);
-  if (c.archivedPath) {
-    // Remember the file to remove even if the archive folder is unavailable right now.
-    const queued = (await db.kvGet<ArchiveRemoval[]>('archiveRemovals')) ?? [];
-    await db.kvSet('archiveRemovals', [...queued.filter((r) => r.capture.id !== c.id), { capture: c, patientId: c.patientId, visitId: c.visitId }]);
-    await processArchiveRemovals();
-  }
+async function undoDelete(id: string): Promise<void> {
+  const timer = pendingDeletes.get(id);
+  if (timer == null) return; // already final
+  window.clearTimeout(timer);
+  pendingDeletes.delete(id);
+  const c = await db.patchCapture(id, { deletedAt: undefined });
+  if (!c) return;
+  set((st) => ({
+    library: st.library && !st.library.some((x) => x.id === id) ? [...st.library, c] : st.library,
+    ...(st.activePatientId === c.patientId && !st.captures.some((x) => x.id === id) ? { captures: [...st.captures, c].sort((a, b) => a.takenAt - b.takenAt) } : {}),
+  }));
+  void loadRows();
   void refreshPending();
 }
 
-async function processArchiveRemovals(): Promise<void> {
-  if (!archiveHandle || get().archive.status !== 'connected') return;
-  const queued = (await db.kvGet<ArchiveRemoval[]>('archiveRemovals')) ?? [];
-  const remaining: ArchiveRemoval[] = [];
-  for (const r of queued) {
-    const [patient, visit] = await Promise.all([db.getPatient(r.patientId), db.getVisit(r.visitId)]);
-    if (!patient || !visit) continue;
-    try {
-      await removeArchived(archiveHandle, patient, visit, r.capture);
-    } catch {
-      remaining.push(r);
-    }
-  }
-  await db.kvSet('archiveRemovals', remaining);
+/** Make a delete final: the archive file is queued for removal first, then the record goes. */
+async function commitDelete(id: string): Promise<void> {
+  const timer = pendingDeletes.get(id);
+  if (timer != null) window.clearTimeout(timer);
+  pendingDeletes.delete(id);
+  // The record as it is now, not as it was when Delete was pressed: its archive file may
+  // only have been written since.
+  const c = await db.getCaptureRaw(id);
+  if (!c?.deletedAt) return;
+  if (c.archivedPath) await queueRemoval(c.archivedPath);
+  await db.deleteCapture(id);
+  forgetThumb(id);
+  await processArchiveRemovals();
+  void refreshPending();
 }
 
-/** Deletes still inside their undo window are committed if the page is closed. */
-function flushPendingDeletes(): void {
-  for (const [id, timer] of pendingDeletes) {
-    window.clearTimeout(timer);
-    pendingDeletes.delete(id);
-    void db.getCapture(id).then((c) => c && commitDelete(c));
-  }
+/** Files to remove from the archive folder, remembered until it has been done (the folder may be away). */
+type Removal = { path: string } | { capture: Capture }; // the second shape is from earlier versions
+const removalPath = (r: Removal) => ('path' in r ? r.path : r.capture?.archivedPath);
+
+async function queueRemoval(path: string): Promise<void> {
+  await db.kvUpdate<Removal[]>('archiveRemovals', (list) => [...(list ?? []).filter((r) => removalPath(r) !== path), { path }]);
 }
-if (typeof window !== 'undefined') window.addEventListener('pagehide', flushPendingDeletes);
+
+let removals: Promise<void> = Promise.resolve();
+function processArchiveRemovals(): Promise<void> {
+  removals = removals
+    .then(async () => {
+      if (!archiveHandle || get().archive.status !== 'connected') return;
+      for (const r of (await db.kvGet<Removal[]>('archiveRemovals')) ?? []) {
+        const path = removalPath(r);
+        try {
+          if (path) await removeArchived(archiveHandle, path);
+        } catch {
+          continue; // still queued; tried again at the next sync
+        }
+        await db.kvUpdate<Removal[]>('archiveRemovals', (list) => (list ?? []).filter((x) => removalPath(x) !== path));
+      }
+    })
+    .catch(() => undefined);
+  return removals;
+}
 
 /* ───────────────────────── archive folder ───────────────────────── */
 
 async function refreshPending(): Promise<void> {
   const all = await db.allCaptures();
   // Marks drawn a moment ago are about to be written; they only count once that has failed or been missed.
-  const pending = all.filter((c) => !pendingDeletes.has(c.id) && (!c.archivedPath || (db.annotatedCopyStale(c) && !annotationTimers.has(c.id)))).length;
+  const waiting = (c: Capture) => !c.archivedPath || !!c.archiveDirty || (db.annotatedCopyStale(c) && !annotationTimers.has(c.id));
+  const pending = all.filter(waiting).length;
   set((s) => ({ archive: { ...s.archive, pending } }));
 }
 
 export async function chooseArchiveFolder(): Promise<void> {
   const handle = await pickDirectory('lumen-archive', 'readwrite');
   if (!handle) return;
+  const previous = archiveHandle;
   archiveHandle = handle;
   await db.kvSet('archiveHandle', handle);
   set((s) => ({ archive: { ...s.archive, status: 'connected', name: handle.name } }));
   toast({ tone: 'success', message: `Archiving to “${handle.name}”` });
+  const sameFolder = previous ? await previous.isSameEntry(handle).catch(() => false) : false;
+  if (previous && !sameFolder) await forgetCopiesNotIn(handle);
   await syncArchive();
+}
+
+/**
+ * After the archive folder is changed, photos that are not in the new folder are no longer
+ * counted as archived, so the sync that follows writes them there and the new folder is complete.
+ */
+async function forgetCopiesNotIn(root: FileSystemDirectoryHandle): Promise<void> {
+  for (const c of (await db.allCaptures()).filter((x) => x.archivedPath)) {
+    try {
+      if (await archivedFileExists(root, c.archivedPath!)) continue;
+    } catch {
+      return; // the folder can't be read; leave the records as they are
+    }
+    await patchCapture(c.id, { archivedPath: undefined, annotatedPath: undefined, annotatedAt: undefined, archiveDirty: undefined });
+  }
 }
 
 export async function reconnectArchive(): Promise<boolean> {
@@ -847,27 +1048,73 @@ export async function disconnectArchive(): Promise<void> {
   set((s) => ({ archive: { ...s.archive, status: fsSupported ? 'none' : 'unsupported', name: undefined } }));
 }
 
-/** Write anything that was captured (or marked up) while the archive folder was unavailable. */
-export async function syncArchive(quiet = false): Promise<void> {
+let syncing: Promise<void> | null = null;
+
+/**
+ * Bring the archive folder up to date: photos not yet written, relabels and edits that
+ * never reached it, annotated copies, and files waiting to be removed. Only one sync runs at
+ * a time; asking again while one is running waits for that one.
+ */
+export function syncArchive(quiet = false): Promise<void> {
+  syncing ??= runSync(quiet).finally(() => {
+    syncing = null;
+  });
+  return syncing;
+}
+
+async function runSync(quiet: boolean): Promise<void> {
   if (!archiveHandle) return;
-  const pending = (await db.unarchivedCaptures()).filter((c) => !pendingDeletes.has(c.id));
+  const root = archiveHandle;
   let done = 0;
-  for (const c of pending) {
-    const [patient, visit, img] = await Promise.all([db.getPatient(c.patientId), db.getVisit(c.visitId), db.getImage(c.id)]);
-    if (!patient || !visit || !img) continue;
+  let failed = 0;
+  let streak = 0;
+  let lastError = '';
+
+  // 1. Relabels and edits made while the folder was away.
+  for (const c of (await db.allCaptures()).filter((x) => x.archivedPath && x.archiveDirty)) {
     try {
-      const owner = await pinArchiveFolder(patient);
-      const path = await archiveCapture(archiveHandle, owner, visit, c, img.full);
-      await patchCapture(c.id, { archivedPath: path });
-      done++;
+      await inCaptureOrder(() => reconcileArchive(c.id));
     } catch (e) {
-      set((s) => ({ archive: { ...s.archive, status: 'error' } }));
-      toast({ tone: 'error', message: 'Archive sync stopped', detail: (e as Error).message });
-      break;
+      lastError = (e as Error).message;
     }
   }
-  if (done && !quiet) toast({ tone: 'success', message: `${done} photo${done === 1 ? '' : 's'} written to the archive` });
+
+  // 2. Photos not written yet. One that fails is skipped, not allowed to hold up the rest.
+  for (const listed of (await db.allCaptures()).filter((x) => !x.archivedPath)) {
+    if (streak >= 3) break; // the folder itself is unavailable: stop rather than fail once per photo
+    if (archiving.has(listed.id)) continue; // being written by the capture that made it
+    const c = await db.getCapture(listed.id);
+    if (!c || c.archivedPath) continue;
+    const [patient, visit, img] = await Promise.all([db.getPatient(c.patientId), db.getVisit(c.visitId), db.getImage(c.id)]);
+    if (!patient || !visit || !img) continue;
+    archiving.add(c.id);
+    try {
+      const owner = await pinArchiveFolder(patient);
+      const path = await archiveCapture(root, owner, visit, c, img.full);
+      await afterArchived(c, path);
+      done++;
+      streak = 0;
+      if (done % 10 === 0) void refreshPending();
+    } catch (e) {
+      failed++;
+      streak++;
+      lastError = (e as Error).message;
+    } finally {
+      archiving.delete(c.id);
+    }
+  }
+
+  if (failed && !done) {
+    set((s) => ({ archive: { ...s.archive, status: 'error' } }));
+    toast({ tone: 'error', message: 'Archive sync stopped', detail: lastError });
+  } else {
+    if (get().archive.status === 'error') set((s) => ({ archive: { ...s.archive, status: 'connected' } }));
+    if (failed) toast({ tone: 'warning', message: `${failed} photo${failed === 1 ? '' : 's'} could not be written yet`, detail: `They are safe in Lumen and will be tried again. ${lastError}` });
+    if (done && !quiet) toast({ tone: 'success', message: `${done} photo${done === 1 ? '' : 's'} written to the archive` });
+  }
+
   if (get().archive.status === 'connected') {
+    // 3. Annotated copies.
     for (const c of (await db.allCaptures()).filter((x) => db.annotatedCopyStale(x) && !annotationTimers.has(x.id))) {
       try {
         await writeAnnotatedCopy(c.id);
@@ -875,8 +1122,9 @@ export async function syncArchive(quiet = false): Promise<void> {
         break; // the folder has gone away again; try next time
       }
     }
+    // 4. Files of photos that have been deleted.
+    await processArchiveRemovals();
   }
-  await processArchiveRemovals();
   await refreshPending();
 }
 
@@ -893,6 +1141,15 @@ export async function chooseTetherFolder(): Promise<void> {
   await startTether();
 }
 
+/** What was selected when each arriving file was first seen, by its path in the folder. */
+const tetherLabels = new Map<string, Labels>();
+let tetherHeartbeat: number | null = null;
+
+/** Remember when this folder was last being watched, so photos that arrive while it isn't can be found afterwards. */
+function noteTetherWatched(): void {
+  if (tetherHandle && watcher?.running) void db.kvSet('tetherWatchedAt', { name: tetherHandle.name, at: Date.now() }).catch(() => undefined);
+}
+
 export async function startTether(): Promise<void> {
   if (!tetherHandle) {
     await chooseTetherFolder();
@@ -905,43 +1162,101 @@ export async function startTether(): Promise<void> {
     return;
   }
   watcher?.stop();
+  tetherLabels.clear();
+  const missed: HeldPhoto[] = [];
   watcher = new FolderWatcher(tetherHandle, {
+    // The photo is labelled with what is selected NOW, as it starts to arrive. It takes a
+    // second or two more to finish writing, and the selection may have moved on by then.
+    onSeen: (path) => {
+      if (tetherLabels.has(path)) return;
+      tetherLabels.set(path, currentLabels());
+      set((s) => ({ tether: { ...s.tether, arriving: tetherLabels.size } }));
+    },
     onFile: onTetherFile,
+    onMissed: (file, _path, _handle, parent) => missed.push({ file, parent, receivedAt: Date.now(), source: 'tether' }),
     onRawOnly: () => {
       if (rawHintShown) return;
       rawHintShown = true;
       toast({
         tone: 'warning',
         message: 'Unsupported photo format',
-        detail: 'Browsers can’t display RAW or HEIF. Set the camera to JPEG (L, fine) — RAW + JPEG also works.',
+        detail: 'Browsers can’t display RAW or HEIF. Set the camera to JPEG (L, fine). RAW + JPEG also works.',
         duration: 9000,
       });
     },
-    onError: (e) => {
+    onError: (e, streak) => {
       if ((e as DOMException)?.name === 'NotAllowedError') {
         set((s) => ({ tether: { ...s.tether, status: 'needs-permission', watching: false } }));
         watcher?.stop();
+      } else if (streak === 5) {
+        // Say so rather than go on showing "Watching" over a folder that can't be read.
+        set((s) => ({ tether: { ...s.tether, status: 'error' } }));
+        toast({
+          tone: 'error',
+          message: 'The camera folder can’t be read',
+          detail: `Lumen keeps trying. Check that “${tetherHandle?.name}” still exists and its drive is connected. ${(e as Error)?.message ?? ''}`,
+          duration: 12000,
+        });
       }
     },
+    onRecovered: () => set((s) => (s.tether.status === 'error' ? { tether: { ...s.tether, status: 'connected' } } : {})),
   });
-  await watcher.start();
-  set((s) => ({ tether: { ...s.tether, status: 'connected', watching: true } }));
+  const before = await db.kvGet<{ name: string; at: number }>('tetherWatchedAt');
+  await watcher.start(before?.name === tetherHandle.name ? before.at : undefined);
+  set((s) => ({ tether: { ...s.tether, status: 'connected', watching: true, arriving: 0 } }));
+  noteTetherWatched();
+  if (tetherHeartbeat != null) window.clearInterval(tetherHeartbeat);
+  tetherHeartbeat = window.setInterval(noteTetherWatched, 15_000);
+  if (missed.length) {
+    // Taken while Lumen was closed or waiting for permission. They are not filed to whoever
+    // happens to be selected now: they wait until someone says whose they are.
+    set((s) => ({ held: [...s.held, ...missed] }));
+    toast({
+      tone: 'warning',
+      message: `${missed.length} photo${missed.length === 1 ? '' : 's'} arrived while Lumen wasn’t watching`,
+      detail: 'Choose the patient, then “File to”. Dismiss them if they are not for a patient.',
+      duration: 12000,
+    });
+  }
 }
 
 export function stopTether(): void {
+  noteTetherWatched();
+  if (tetherHeartbeat != null) window.clearInterval(tetherHeartbeat);
+  tetherHeartbeat = null;
   watcher?.stop();
   watcher = null;
-  set((s) => ({ tether: { ...s.tether, watching: false } }));
+  tetherLabels.clear();
+  set((s) => ({ tether: { ...s.tether, watching: false, arriving: 0 } }));
 }
 
-async function onTetherFile(file: File, path: string, _handle: FileSystemFileHandle, parent: FileSystemDirectoryHandle): Promise<void> {
-  set((s) => ({ tether: { ...s.tether, lastAt: Date.now() } }));
-  if (!get().patient) {
-    holdPhoto({ file, parent, receivedAt: Date.now(), source: 'tether' });
+async function onTetherFile(file: File, path: string, _handle: FileSystemFileHandle, parent: FileSystemDirectoryHandle, attempt: number): Promise<void> {
+  const labels = tetherLabels.get(path);
+  const settle = () => {
+    tetherLabels.delete(path);
+    set((s) => ({ tether: { ...s.tether, lastAt: Date.now(), arriving: tetherLabels.size } }));
+  };
+  const h: HeldPhoto = { file, parent, receivedAt: Date.now(), source: 'tether' };
+  const patient = labels ? labels.patient : get().patient;
+  if (!patient) {
+    // Nobody was selected when it was taken: it waits for a patient.
+    settle();
+    holdPhoto(h);
     return;
   }
-  void path;
-  await fileHeldPhoto({ file, parent, receivedAt: Date.now(), source: 'tether' });
+  if (await fileHeldPhoto(h, patient, labels)) {
+    settle();
+    return;
+  }
+  // Not readable yet (perhaps still being written): the watcher tries twice more, with the same labels.
+  if (attempt < TETHER_LAST_ATTEMPT) throw new Error('Photo not readable yet');
+  settle();
+  toast({
+    tone: 'error',
+    message: `Couldn’t read ${file.name}`,
+    detail: 'It is still in the camera folder. If it opens in a photo viewer, add it with “Add photos from files”.',
+    duration: 15000,
+  });
 }
 
 /** A photo arrived with no patient selected: keep it until one is chosen. */
@@ -952,34 +1267,59 @@ export function holdPhoto(h: HeldPhoto): void {
   if (first) toast({ tone: 'warning', message: 'Photo received. Choose a patient', detail: 'It’s waiting and will be filed to the patient you select.' });
 }
 
-/** File a photo that arrived from the camera rather than from a shutter press in Lumen. */
-export async function fileHeldPhoto(h: HeldPhoto, patient?: Patient): Promise<void> {
-  if (get().settings.shutterSound) playShutter();
-  set((st) => ({ flashTick: st.flashTick + 1 }));
+/**
+ * File a photo that arrived from the camera rather than from a shutter press in Lumen.
+ * Returns false if it could not be read or stored (nothing is lost: the caller still has it).
+ */
+export async function fileHeldPhoto(h: HeldPhoto, patient?: Patient, labels?: Labels): Promise<boolean> {
   const label = h.deviceLabel ?? 'Canon EOS (tethered)';
+  // A camera's clock can be hours out. Its time is used only when it agrees with when the photo arrived.
+  const fileTime = h.file.lastModified;
+  const takenAt = fileTime && Math.abs(fileTime - h.receivedAt) < 10 * 60_000 ? fileTime : h.receivedAt;
   const c = await ingest(
-    { original: h.file, source: h.source, deviceLabel: label, transform: transformFor(label), takenAt: h.file.lastModified || h.receivedAt, exposure: h.exposure },
+    { original: h.file, source: h.source, deviceLabel: label, transform: transformFor(label), takenAt, exposure: h.exposure, ...(labels ? labelInput(labels) : {}) },
     patient,
   );
-  if (c && h.source === 'tether' && h.parent && get().settings.removeTetherOriginals) {
-    try {
-      await h.parent.removeEntry(h.file.name);
-    } catch {
-      /* leave it; it's already safely stored */
+  if (!c) return false;
+  if (get().settings.shutterSound) playShutter();
+  set((st) => ({ flashTick: st.flashTick + 1 }));
+  if (h.source === 'tether' && h.parent && get().settings.removeTetherOriginals) {
+    // The camera's own copy is only tidied away once the photo is safely in the archive folder
+    // (or when no archive folder is in use and Lumen is the record by choice).
+    const status = get().archive.status;
+    const archived = !!(await db.getCapture(c.id))?.archivedPath;
+    if (archived || status === 'none' || status === 'unsupported') {
+      try {
+        await h.parent.removeEntry(h.file.name);
+      } catch {
+        /* leave it; it's already safely stored */
+      }
     }
   }
+  return true;
 }
 
 export async function fileHeldPhotos(): Promise<void> {
   const { held, patient } = get();
   if (!patient || !held.length) return;
   set({ held: [] });
-  for (const h of held) await fileHeldPhoto(h, patient);
-  toast({ tone: 'success', message: `${held.length} waiting photo${held.length === 1 ? '' : 's'} filed` });
+  const labels = currentLabels();
+  const failed: HeldPhoto[] = [];
+  for (const h of held) if (!(await fileHeldPhoto(h, patient, labels))) failed.push(h);
+  // Anything that could not be read stays in the banner rather than disappearing.
+  if (failed.length) set((s) => ({ held: [...failed, ...s.held] }));
+  const filed = held.length - failed.length;
+  if (filed) toast({ tone: 'success', message: `${filed} waiting photo${filed === 1 ? '' : 's'} filed to ${displayName(patient)}` });
 }
 
 export function discardHeldPhotos(): void {
+  const dropped = get().held;
+  if (!dropped.length) return;
   set({ held: [] });
+  toast({
+    message: `${dropped.length} waiting photo${dropped.length === 1 ? '' : 's'} discarded`,
+    action: { label: 'Undo', run: () => set((s) => ({ held: [...dropped, ...s.held] })) },
+  });
 }
 
 /* ───────────────────────── sheets & viewer ───────────────────────── */

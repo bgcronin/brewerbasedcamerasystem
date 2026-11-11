@@ -44,6 +44,14 @@ export async function kvSet(key: string, value: unknown): Promise<void> {
 export async function kvDelete(key: string): Promise<void> {
   await (await db()).delete('kv', key);
 }
+/** Read, change and write one value in a single transaction, so two updates can never overwrite each other. */
+export async function kvUpdate<T>(key: string, change: (current: T | undefined) => T): Promise<T> {
+  const tx = (await db()).transaction('kv', 'readwrite');
+  const next = change((await tx.store.get(key)) as T | undefined);
+  await tx.store.put(next, key);
+  await tx.done;
+  return next;
+}
 
 /* ───────── patients & visits ───────── */
 
@@ -53,6 +61,40 @@ export async function getPatient(id: string): Promise<Patient | undefined> {
 
 export async function putPatient(p: Patient): Promise<void> {
   await (await db()).put('patients', { ...p, updatedAt: Date.now() });
+}
+
+/** Change some fields of a patient, leaving the rest exactly as they are in the database right now. */
+export async function patchPatient(id: string, patch: Partial<Patient>): Promise<Patient | undefined> {
+  const tx = (await db()).transaction('patients', 'readwrite');
+  const current = await tx.store.get(id);
+  if (!current) {
+    await tx.done;
+    return undefined;
+  }
+  const next = { ...current, ...patch, updatedAt: Date.now() };
+  await tx.store.put(next);
+  await tx.done;
+  return next;
+}
+
+/**
+ * Fix a patient's archive folder name, once. If it is already fixed that name is kept.
+ * A name another patient already uses gets a numeric suffix, so two patients never share a folder.
+ */
+export async function pinArchiveFolder(id: string, wanted: string): Promise<Patient | undefined> {
+  const tx = (await db()).transaction('patients', 'readwrite');
+  const current = await tx.store.get(id);
+  if (!current || current.archiveFolder) {
+    await tx.done;
+    return current;
+  }
+  const taken = new Set((await tx.store.getAll()).filter((p) => p.id !== id && p.archiveFolder).map((p) => p.archiveFolder!.toLowerCase()));
+  let folder = wanted;
+  for (let n = 2; taken.has(folder.toLowerCase()); n++) folder = `${wanted}_${n}`;
+  const next = { ...current, archiveFolder: folder };
+  await tx.store.put(next);
+  await tx.done;
+  return next;
 }
 
 export async function getVisit(id: string): Promise<Visit | undefined> {
@@ -268,7 +310,14 @@ export async function patchCapture(id: string, patch: Partial<Capture>): Promise
   return next;
 }
 
+/** A photo by id. A photo whose Delete is still inside its undo window counts as gone. */
 export async function getCapture(id: string): Promise<Capture | undefined> {
+  const c = await (await db()).get('captures', id);
+  return c && !c.deletedAt ? c : undefined;
+}
+
+/** The stored record whatever its state, including one that is waiting to be deleted. */
+export async function getCaptureRaw(id: string): Promise<Capture | undefined> {
   return (await db()).get('captures', id);
 }
 
@@ -280,17 +329,24 @@ export async function deleteCapture(id: string): Promise<void> {
   await tx.done;
 }
 
+const live = (c: Capture) => !c.deletedAt;
+
 export async function capturesForPatient(patientId: string): Promise<Capture[]> {
   const list = await (await db()).getAllFromIndex('captures', 'patientId', patientId);
-  return list.sort((a, b) => a.takenAt - b.takenAt);
+  return list.filter(live).sort((a, b) => a.takenAt - b.takenAt);
 }
 
 export async function capturesForDate(date: string): Promise<Capture[]> {
-  return (await db()).getAllFromIndex('captures', 'date', date);
+  return (await (await db()).getAllFromIndex('captures', 'date', date)).filter(live);
 }
 
 export async function allCaptures(): Promise<Capture[]> {
-  return (await db()).getAll('captures');
+  return (await (await db()).getAll('captures')).filter(live);
+}
+
+/** Photos whose Delete was pressed but not yet made final (the undo window, or Lumen was closed first). */
+export async function deletedCaptures(): Promise<Capture[]> {
+  return (await (await db()).getAll('captures')).filter((c) => !!c.deletedAt);
 }
 
 /** True when the marks on a photo have changed since its "_annotated" copy was last written. */
@@ -298,9 +354,13 @@ export function annotatedCopyStale(c: Capture): boolean {
   return !!c.archivedPath && (c.annotationsAt ?? 0) > (c.annotatedAt ?? 0);
 }
 
+/** True when the archive folder is missing something for this photo: the file, a relabel, or its marks. */
+export function needsArchiveWork(c: Capture): boolean {
+  return !c.archivedPath || !!c.archiveDirty || annotatedCopyStale(c);
+}
+
 export async function unarchivedCaptures(): Promise<Capture[]> {
-  const all = await (await db()).getAll('captures');
-  return all.filter((c) => !c.archivedPath);
+  return (await allCaptures()).filter((c) => !c.archivedPath);
 }
 
 export async function getImage(id: string): Promise<StoredImage | undefined> {

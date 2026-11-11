@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { CameraSheet } from './components/CameraSheet';
 import { CaptureView } from './components/CaptureView';
 import { CompareView } from './components/CompareView';
-import { Icon } from './components/Icon';
+import { Icon, Logo } from './components/Icon';
 import { ImportSheet } from './components/ImportSheet';
 import { Inspector } from './components/Inspector';
 import { LibraryView } from './components/LibraryView';
@@ -15,12 +15,20 @@ import { Toasts } from './components/Toasts';
 import { TopBar } from './components/TopBar';
 import { Worklist } from './components/Worklist';
 import { handleDroppedFiles, onGlobalKeyDown, onGlobalKeyUp } from './state/actions';
-import { importFiles, init, toast, useApp } from './state/store';
+import { stopLink } from './state/canon';
+import { importFiles, init, toast, useApp, takeOverWindow } from './state/store';
+import { Button } from './components/ui';
 
 export function App() {
   const view = useApp((s) => s.view);
   const ready = useApp((s) => s.ready);
+  const secondary = useApp((s) => s.secondary);
   const [dragging, setDragging] = useState(false);
+
+  // If another window takes over, this one lets go of the camera as well.
+  useEffect(() => {
+    if (secondary) stopLink();
+  }, [secondary]);
 
   useEffect(() => {
     init().catch((e: unknown) => {
@@ -74,6 +82,21 @@ export function App() {
       window.removeEventListener('drop', drop);
     };
   }, []);
+
+  if (secondary) {
+    // Lumen is open elsewhere. Two windows would each watch the camera and write the archive,
+    // filing every photo twice, so only one works at a time.
+    return (
+      <div className="other-window" role="alertdialog" aria-labelledby="other-window-title">
+        <Logo size={44} />
+        <h1 id="other-window-title">Lumen is open in another window</h1>
+        <p>Only one window takes photographs at a time, so that each photo is filed once. Carry on in the other window, or switch to this one.</p>
+        <Button variant="primary" size="lg" onClick={() => void takeOverWindow()}>
+          Use this window
+        </Button>
+      </div>
+    );
+  }
 
   return (
     <div className="app" data-view={view} data-ready={ready || undefined}>

@@ -297,7 +297,12 @@ function ShutterArea() {
           </span>
         </div>
         <div className="shutter-caption">
-          {ready ? (
+          {tether.arriving > 0 ? (
+            <>
+              <strong>Photo arriving…</strong>
+              <span>Labelled as it was taken</span>
+            </>
+          ) : ready ? (
             <>
               <strong>Ready, {eye}</strong>
               <span>Press the shutter on the Canon</span>
