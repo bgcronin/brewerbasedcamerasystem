@@ -28,6 +28,11 @@ const TOOLS: { tool: AnnotationTool; icon: IconName; label: string }[] = [
 /** How many thumbnails to keep either side of the current photo in the strip. */
 const STRIP_REACH = 30;
 
+/** Space, or any key the foot switch is set to send. */
+function isPedal(e: KeyboardEvent): boolean {
+  return e.code === 'Space' || useApp.getState().settings.captureKeys.includes(e.code);
+}
+
 function sameLabels(a: string[] | undefined, b: string[] | undefined): boolean {
   const x = a ?? [];
   const y = b ?? [];
@@ -130,6 +135,12 @@ export function Lightbox() {
         if (e.key === 'Escape') target.blur();
         return;
       }
+      // The foot switch (Space, or whichever key it sends) must never "press" a button that
+      // happens to have focus here, such as Delete after it was last clicked.
+      if (isPedal(e) && !(annotating && e.code === 'Space')) {
+        e.preventDefault();
+        return;
+      }
       if (annotating) {
         // While drawing, only the drawing keys work: nothing here can move to another photo or delete one.
         if (e.code === 'Space') {
@@ -159,6 +170,7 @@ export function Lightbox() {
     };
     const onKeyUp = (e: KeyboardEvent) => {
       if (e.code === 'Space') setSpaceHeld(false);
+      if (isPedal(e) && !(e.target as HTMLElement | null)?.closest?.('input, textarea, select')) e.preventDefault();
     };
     const onBlur = () => setSpaceHeld(false);
     window.addEventListener('keydown', onKey);

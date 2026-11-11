@@ -1,6 +1,6 @@
 # Lumen · Slit Lamp Imaging
 
-Browser-based slit lamp photography for the ophthalmology clinic. Import the day's clinic list, pick a patient, choose the eye, and photograph. Every image is labelled with patient, eye (OD / OS / OU) and illumination technique, then stored as an efficient WebP file in a clean folder per patient and visit.
+Browser-based slit lamp photography for the ophthalmology clinic. Import the day's clinic list, pick a patient, choose the eye, and photograph. Every image is labelled with patient, eye (OD / OS / OU), illumination technique and diagnosis, then stored as an efficient WebP file in a clean folder per patient and visit. Any photograph can be found again by diagnosis, name or hospital number, and marked up with circles, arrows and labels.
 
 ![Capture view](docs/screenshots/capture.webp)
 
@@ -13,6 +13,10 @@ Browser-based slit lamp photography for the ophthalmology clinic. Import the day
 | Import a clinic list | Review, compare, export |
 | --- | --- |
 | ![Import](docs/screenshots/import.webp) | ![Review](docs/screenshots/review.webp) |
+
+| Find any photograph | Mark what matters |
+| --- | --- |
+| ![Library](docs/screenshots/library.webp) | ![Annotate](docs/screenshots/annotate.webp) |
 
 ---
 
@@ -49,10 +53,37 @@ For development with live reload: `npm run dev` → http://localhost:5173.
 1. **Import list.** Drop the day's CSV onto the window, or use *Import list*. Lumen recognises the usual column headings and shows a preview before anything is saved.
 2. **Pick a patient** (click, or ↑ ↓). The eye resets to OD for each new patient.
 3. **Choose the eye** (R / L / B) and, optionally, the illumination (1–8: diffuse, slit, retro, specular, scatter, cobalt blue, red-free, external).
-4. **Capture** with Space, the foot switch or the shutter button. You get a soft flash and click, and the thumbnail drops into the filmstrip.
-5. **Review** (V) shows every visit right eye beside left. Open any photo to zoom to 1:1, star it, add a note, re-label it, or **compare** it side by side with a previous visit using linked zoom. **Export** packs the patient's photos into a ZIP.
+4. **Label the diagnosis** (D), once per patient. Type a few letters and press Enter. It goes on every photo you take of that patient today, including the ones already taken.
+5. **Capture** with Space, the foot switch or the shutter button. You get a soft flash and click, and the thumbnail drops into the filmstrip.
+6. **Review** (V) shows every visit right eye beside left. Open any photo to zoom to 1:1, star it, add a note, re-label it, annotate it, or **compare** it side by side with a previous visit using linked zoom. **Export** packs the patient's photos into a ZIP.
 
 Deleted a photo by mistake? Press **Undo** on the notice that appears. Relabelling a photo (OD → OS, or a different illumination) renames its file in the archive folder too, so the folder always agrees with the label.
+
+---
+
+## Diagnoses, search and annotation
+
+### Diagnosis labels
+
+The **Diagnosis** field sits under the illumination buttons. Lumen suggests as you type from a built-in list of anterior segment diagnoses. Abbreviations and either spelling work: `kc` finds Keratoconus, `hsk` Herpes simplex keratitis, and `edema` or `oedema` both find Corneal oedema. Anything that isn't on the list can simply be typed and kept, and Lumen offers it again next time. A patient's earlier diagnoses appear as one-click buttons when they come back.
+
+A photo can carry more than one diagnosis. To change the labels on a single photo, open it and use the Diagnosis field in the details panel; *Use for all photos of this visit* copies them to the rest.
+
+### Library: find any photograph
+
+**Library** (top bar, or Ctrl+K from anywhere) searches every photograph in Lumen. Type any mix of:
+
+- a diagnosis, or its abbreviation: `keratoconus`, `kc`, `pterygium`
+- a name or hospital number, or part of one: `fitz`, `H100234`, `0234`
+- a word from a note, an illumination, a year or a month: `vogt`, `cobalt`, `2025`, `june`
+
+Every word you type has to match, so `fitz keratoconus` narrows to that patient's keratoconus photos. The buttons beside the search box filter by eye, starred, annotated and period, and the chips underneath list your diagnoses with the number of patients for each: one click shows them all. Results are grouped by patient. Click a photo to open it, or *All photos* to go to that patient.
+
+### Annotation
+
+Open a photo and press **A** (or the pencil-line button). Draw a **circle** round a lesion (hold Shift for a perfect circle), an **arrow**, a **freehand** line or a **text** label, in yellow, cyan, pink or white. The eraser removes a mark, Ctrl+Z undoes, and scrolling still zooms while you draw (hold Space to move the photo).
+
+**The original photograph is never changed.** Marks are stored beside it, and can be hidden and shown with **M**. In the archive folder Lumen writes a second file next to the original, ending `_annotated`, with the marks drawn in, so anyone opening the folder sees them without Lumen. Downloads and ZIP exports include both.
 
 ---
 
@@ -158,8 +189,9 @@ Archive/
   FITZGERALD_Eleanor_H100234/
     2026-11-03/
       H100234_20261103_143205_OD_slit.webp
+      H100234_20261103_143205_OD_slit_annotated.webp   ← only if you drew on it; the original is untouched
       H100234_20261103_143212_OS_diffuse.webp
-      visit.json         ← patient, visit and per-image metadata (eye, technique, time, notes)
+      visit.json         ← patient, visit and per-image metadata (eye, technique, time, diagnoses, notes, marks)
 ```
 
 - Photos are written to the archive the moment they're taken. If the folder is unavailable (network share down, or permission needed after a restart), photos are kept safely in the browser and synced when it's back. The top-bar pill shows the status and how many are waiting.
@@ -173,10 +205,14 @@ Archive/
 | Key | Action | Key | Action |
 | --- | --- | --- | --- |
 | Space | Capture (or your foot-switch key) | ↑ ↓ | Previous / next patient |
-| R · L · B | Right (OD) · Left (OS) · Both (OU) | / | Search patients |
-| 1 – 8 · 0 | Illumination technique · clear | V | Capture ⇄ Review |
+| R · L · B | Right (OD) · Left (OS) · Both (OU) | / | Find a patient on the list |
+| 1 – 8 · 0 | Illumination technique · clear | Ctrl+K | Search every photograph (Library) |
+| D | Diagnosis for today's photos | V | Capture ⇄ Review |
 | G | Centring reticle | F | Full-screen live view |
 | ← → | Previous / next photo (viewer) | S, I, Del | Star, details, delete |
+| A | Annotate (viewer) | M | Show / hide marks |
+
+The eye, illumination, diagnosis, reticle and full-screen keys act only in the Capture view, where their controls are on screen.
 
 Press **?** in the app for the full list.
 
@@ -187,7 +223,8 @@ Press **?** in the app for the full list.
 ```
 src/
   lib/            framework-free logic: CSV parsing, importers, dates & names, IndexedDB,
-                  archive writer, folder watcher, encoder, ZIP, file naming
+                  archive writer, folder watcher, encoder, ZIP, file naming,
+                  diagnoses (vocabulary + matching), search, annotations (drawing + rendering)
   state/          app state (zustand): store.ts, camera.ts, canon.ts (Camera Link client), keyboard actions
   components/     React UI
   styles/         design tokens (tokens.css), base controls, layout
@@ -198,9 +235,10 @@ tests/            unit tests (Vitest) and end-to-end tests (Playwright)
 ```
 
 ```bash
-npm test            # unit tests: CSV, dates, names, column mapping, ZIP, database import
+npm test            # unit tests: CSV, dates, names, column mapping, ZIP, database import, diagnoses, search, annotations
 npm run typecheck
 node tests/e2e/smoke.cjs   # with `npm start` running; needs Playwright + Chromium
+node tests/e2e/features.cjs  # with `npm start` running; labels, Library search, annotation and the archive copy
 node tests/e2e/canon.cjs   # after `npm run build`; starts the helper's simulated EOS 60D itself
 node tests/e2e/scan.cjs    # with `npm start` running; imports a printed list as PDF and as a photo (OCR)
 cd helper && npm test      # runs the real Canon SDK bindings against a stand-in library (needs a C compiler)
@@ -212,5 +250,6 @@ The smoke test imports the sample list, captures from Chromium's fake camera, ch
 
 - **DICOM export** (VL Photographic Image) for PACS or Forum integration.
 - HL7 / FHIR worklist import from the PAS.
-- Annotation (arrows, measurements) and fluorescein grading overlays.
+- Measurements (calibrated against the slit lamp's magnification) and fluorescein grading overlays.
+- A whole-database backup and "rebuild from the archive folder", for moving to a new PC.
 - Canon presets that also cover image quality and drive mode.

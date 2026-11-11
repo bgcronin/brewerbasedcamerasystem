@@ -249,6 +249,17 @@ function assert(cond, msg) {
   }, annotated[0]);
   assert(sizes.copy[0] === sizes.original[0] && sizes.copy[1] === sizes.original[1], 'the annotated copy is full resolution');
 
+  // The foot switch must never re-press a focused button in the viewer (Delete, above all).
+  await page.click('.viewer-actions button[aria-label="Star (S)"]');
+  const starred = () => page.evaluate(() => document.querySelector('.viewer-actions button[aria-label="Star (S)"]').classList.contains('is-active'));
+  await page.waitForSelector('.viewer-actions button[aria-label="Star (S)"].is-active');
+  assert(await starred(), 'clicking Star stars the photo');
+  await page.keyboard.press('Space');
+  await page.waitForTimeout(200);
+  assert(await starred(), 'pressing Space afterwards does not press the focused button again');
+  await page.keyboard.press('s');
+  await page.waitForTimeout(200);
+
   // Hide and show marks; they survive closing the viewer.
   await page.keyboard.press('m');
   assert((await page.locator('.anno-layer').count()) === 0, 'M hides the marks');

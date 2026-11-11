@@ -815,7 +815,8 @@ if (typeof window !== 'undefined') window.addEventListener('pagehide', flushPend
 
 async function refreshPending(): Promise<void> {
   const all = await db.allCaptures();
-  const pending = all.filter((c) => !pendingDeletes.has(c.id) && (!c.archivedPath || db.annotatedCopyStale(c))).length;
+  // Marks drawn a moment ago are about to be written; they only count once that has failed or been missed.
+  const pending = all.filter((c) => !pendingDeletes.has(c.id) && (!c.archivedPath || (db.annotatedCopyStale(c) && !annotationTimers.has(c.id)))).length;
   set((s) => ({ archive: { ...s.archive, pending } }));
 }
 
