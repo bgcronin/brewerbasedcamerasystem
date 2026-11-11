@@ -304,7 +304,7 @@ async function onPhoto(h: PhotoHeader, blob: Blob) {
       { original: file, source: 'canon', deviceLabel: label, transform: transformFor(label), takenAt: h.takenAt, eye: filed.eye, technique: filed.technique, exposure: h.exposure },
       filed.patient,
     );
-    if (late) toast({ tone: 'success', message: 'The photo arrived after all', detail: `Filed to ${displayName(late.patient)} · ${late.eye}.`, duration: 7000 });
+    if (late) toast({ tone: 'success', message: 'The photo arrived after all', detail: `Filed to ${displayName(late.patient)}, ${late.eye}.`, duration: 7000 });
     return;
   }
   // Taken with the camera's own shutter button or remote.
@@ -376,7 +376,7 @@ export function sameValues(a: CameraValues | undefined, b: CameraValues): boolea
 }
 
 export function describeValues(v: CameraValues): string {
-  return [v.iso && `ISO ${v.iso}`, v.tv, v.av, v.wb].filter(Boolean).join(' · ');
+  return [v.iso && `ISO ${v.iso}`, v.tv, v.av, v.wb].filter(Boolean).join(', ');
 }
 
 export async function savePreset(techniqueId: string): Promise<void> {

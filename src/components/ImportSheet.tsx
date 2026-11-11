@@ -53,7 +53,7 @@ function ChooseSource({ onResult }: { onResult: (r: ImportResult) => void }) {
           <Icon name="import" size={24} />
         </span>
         <strong>Choose a CSV file</strong>
-        <span>or drop it here · CSV, TSV, TXT or JSON</span>
+        <span>or drop it here (CSV, TSV, TXT or JSON)</span>
       </button>
       <input
         ref={input}
@@ -139,7 +139,7 @@ function MapColumns({ result, onBack }: { result: Extract<ImportResult, { kind: 
         <Icon name="list" size={16} />
         <strong>{result.sourceName}</strong>
         <span className="muted">
-          {dataRows.length} row{dataRows.length === 1 ? '' : 's'} · {width} column{width === 1 ? '' : 's'}
+          {dataRows.length} row{dataRows.length === 1 ? '' : 's'}, {width} column{width === 1 ? '' : 's'}
         </span>
         <span className="flex-1" />
         <label className="inline-switch">
@@ -192,7 +192,7 @@ function MapColumns({ result, onBack }: { result: Extract<ImportResult, { kind: 
             value={order}
             onChange={setOrder}
             options={[
-              { value: 'auto', label: order === 'auto' ? `Auto · ${mapped.dateOrder === 'DMY' ? 'DD/MM' : 'MM/DD'}` : 'Auto' },
+              { value: 'auto', label: order === 'auto' ? `Auto (${mapped.dateOrder === 'DMY' ? 'DD/MM' : 'MM/DD'})` : 'Auto' },
               { value: 'DMY', label: 'DD/MM/YYYY' },
               { value: 'MDY', label: 'MM/DD/YYYY' },
             ]}
@@ -217,7 +217,7 @@ function MapColumns({ result, onBack }: { result: Extract<ImportResult, { kind: 
           <span>Preview</span>
           <span className="muted">
             {mapped.records.length} patient{mapped.records.length === 1 ? '' : 's'}
-            {mapped.skipped > 0 && ` · ${mapped.skipped} row${mapped.skipped === 1 ? '' : 's'} without a name skipped`}
+            {mapped.skipped > 0 && `, ${mapped.skipped} row${mapped.skipped === 1 ? '' : 's'} without a name skipped`}
           </span>
         </div>
         {hasName ? (
@@ -226,7 +226,11 @@ function MapColumns({ result, onBack }: { result: Extract<ImportResult, { kind: 
               <li key={i}>
                 <span className="preview-time">{r.time ?? '—'}</span>
                 <strong>{displayName(r)}</strong>
-                <span className="muted">{[r.mrn, r.dob && formatShortDate(r.dob), r.sex].filter(Boolean).join(' · ')}</span>
+                <span className="muted meta-row">
+                  {r.mrn && <span className="mrn">{r.mrn}</span>}
+                  {r.dob && <span>{formatShortDate(r.dob)}</span>}
+                  {r.sex && <span>{r.sex}</span>}
+                </span>
               </li>
             ))}
           </ul>

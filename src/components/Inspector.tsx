@@ -73,7 +73,10 @@ function PatientCard() {
         {visit && (visit.time || visit.clinic) && (
           <div>
             <dt>Appointment</dt>
-            <dd>{[visit.time, visit.clinic].filter(Boolean).join(' · ')}</dd>
+            <dd className="meta-row">
+              {visit.time && <span>{visit.time}</span>}
+              {visit.clinic && <span>{visit.clinic}</span>}
+            </dd>
           </div>
         )}
         {visit?.clinician && (
@@ -142,7 +145,7 @@ function TechniqueGrid() {
           className={cx('tech', technique === t.id && 'is-on')}
           aria-pressed={technique === t.id}
           onClick={() => chooseTechnique(technique === t.id ? null : t.id)}
-          title={`${t.label} (${i + 1})${presets?.[t.id] ? ` · camera preset: ${describeValues(presets[t.id])}` : ''}`}
+          title={`${t.label} (${i + 1})${presets?.[t.id] ? `. Camera preset: ${describeValues(presets[t.id])}` : ''}`}
         >
           <span className={cx('tech-swatch', `tech-${t.id}`)} aria-hidden="true" />
           <span className="tech-label">{t.short}</span>
@@ -248,7 +251,7 @@ function ShutterArea() {
         <div className="shutter-caption">
           {ready ? (
             <>
-              <strong>Ready · {eye}</strong>
+              <strong>Ready, {eye}</strong>
               <span>Press the shutter on the Canon</span>
             </>
           ) : (
@@ -288,7 +291,7 @@ function ShutterArea() {
           <>
             <strong>
               Capture {eye}
-              {today > 0 && <span className="shutter-count"> · {today} today</span>}
+              {today > 0 && <span className="shutter-count">, {today} today</span>}
             </strong>
             <span>
               <Kbd>{keyName(keys[0] ?? 'Space')}</Kbd> or foot switch
@@ -307,13 +310,21 @@ export function Inspector() {
       <PatientCard />
       <section className="insp-section">
         <h3 className="insp-title">
-          Eye <span className="insp-keys">R · B · L</span>
+          Eye
+          <span className="insp-keys">
+            <Kbd>R</Kbd>
+            <Kbd>B</Kbd>
+            <Kbd>L</Kbd>
+          </span>
         </h3>
         <EyePicker />
       </section>
       <section className="insp-section">
         <h3 className="insp-title">
-          Illumination <span className="insp-keys">1 – 8</span>
+          Illumination
+          <span className="insp-keys">
+            <Kbd>1–8</Kbd>
+          </span>
         </h3>
         <TechniqueGrid />
       </section>

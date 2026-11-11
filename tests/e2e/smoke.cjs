@@ -123,7 +123,7 @@ function assert(cond, msg) {
   console.log('Relabel');
   await page.waitForFunction(() => !document.querySelector('.pill-count'), null, { timeout: 15000 });
   const before = await page.locator('.viewer .meta-list').innerText();
-  await page.click('.viewer-info .segmented-item:has-text("OS · Left")');
+  await page.click('.viewer-info .segmented-item:has-text("OS Left")');
   await page.waitForFunction(() => /_OS/.test(document.querySelector('.viewer .meta-list')?.textContent ?? ''), null, { timeout: 10000 });
   const files2 = await page.evaluate(async () => {
     const out = [];

@@ -5,7 +5,7 @@ import { displayName } from '../lib/names';
 import type { Patient } from '../lib/types';
 import { openSheet, selectPatient, setDate, toast, useApp, type VisitRow } from '../state/store';
 import { Icon } from './Icon';
-import { Button, IconButton, Kbd, cx } from './ui';
+import { Button, IconButton, Kbd, Segmented, cx } from './ui';
 
 function matches(p: Patient, q: string): boolean {
   const s = q.trim().toLowerCase();
@@ -186,13 +186,18 @@ export function Worklist() {
 
         {rows.length > 0 && (
           <div className="list-summary">
-            <div className="list-filters" role="tablist">
-              {(['all', 'todo', 'done'] as const).map((f) => (
-                <button key={f} type="button" role="tab" aria-selected={filter === f} className={cx('chip', filter === f && 'is-on')} onClick={() => setFilter(f)}>
-                  {f === 'all' ? `All ${rows.length}` : f === 'todo' ? `To do ${rows.length - done}` : `Done ${done}`}
-                </button>
-              ))}
-            </div>
+            <Segmented
+              size="sm"
+              ariaLabel="Show"
+              className="list-filters"
+              value={filter}
+              onChange={setFilter}
+              options={[
+                { value: 'all', label: <>All <b>{rows.length}</b></> },
+                { value: 'todo', label: <>To do <b>{rows.length - done}</b></> },
+                { value: 'done', label: <>Done <b>{done}</b></> },
+              ]}
+            />
             <div className="progress" aria-label={`${done} of ${rows.length} photographed`}>
               <i style={{ width: `${rows.length ? (done / rows.length) * 100 : 0}%` }} />
             </div>

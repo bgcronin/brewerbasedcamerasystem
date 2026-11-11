@@ -81,9 +81,10 @@ export function Lightbox() {
           <EyeTag eye={c.eye} size="md" />
           <div>
             <strong>{patient ? displayName(patient) : ''}</strong>
-            <span>
-              {formatShortDate(c.date)} · {formatClock(c.takenAt)}
-              {c.technique && ` · ${techniqueLabel(c.technique)}`}
+            <span className="meta-row">
+              <span>{formatShortDate(c.date)}</span>
+              <span>{formatClock(c.takenAt)}</span>
+              {c.technique && <span>{techniqueLabel(c.technique)}</span>}
             </span>
           </div>
         </div>
@@ -122,9 +123,9 @@ export function Lightbox() {
                 value={c.eye}
                 onChange={(eye) => void updateCapture(c.id, { eye })}
                 options={[
-                  { value: 'OD', label: 'OD · Right' },
+                  { value: 'OD', label: 'OD Right' },
                   { value: 'OU', label: 'OU' },
-                  { value: 'OS', label: 'OS · Left' },
+                  { value: 'OS', label: 'OS Left' },
                 ]}
                 size="sm"
               />
@@ -155,24 +156,24 @@ export function Lightbox() {
               <div>
                 <dt>Resolution</dt>
                 <dd>
-                  {c.width} × {c.height} <span className="muted">· {megapixels(c.width, c.height)}</span>
+                  {c.width} × {c.height} <span className="muted">({megapixels(c.width, c.height)})</span>
                 </dd>
               </div>
               <div>
                 <dt>File</dt>
                 <dd>
-                  {formatLabel(c.mime as ImageFormat) ?? c.mime} · {formatBytes(c.bytes)}
+                  {formatLabel(c.mime as ImageFormat) ?? c.mime}, {formatBytes(c.bytes)}
                 </dd>
               </div>
               {c.exposure && (
                 <div>
                   <dt>Exposure</dt>
-                  <dd>{[c.exposure.mode, c.exposure.tv, c.exposure.av, c.exposure.iso && `ISO ${c.exposure.iso}`, c.exposure.wb].filter(Boolean).join(' · ')}</dd>
+                  <dd>{[c.exposure.mode, c.exposure.tv, c.exposure.av, c.exposure.iso && `ISO ${c.exposure.iso}`, c.exposure.wb].filter(Boolean).join('  ')}</dd>
                 </div>
               )}
               <div>
                 <dt>Source</dt>
-                <dd>{c.source === 'tether' ? 'Canon EOS (tethered)' : c.source === 'file' ? 'Imported file' : c.source === 'canon' ? `${c.deviceLabel ?? 'Canon EOS'} · direct` : c.deviceLabel || 'Live camera'}</dd>
+                <dd>{c.source === 'tether' ? 'Canon EOS (tethered)' : c.source === 'file' ? 'Imported file' : c.source === 'canon' ? `${c.deviceLabel ?? 'Canon EOS'} (direct)` : c.deviceLabel || 'Live camera'}</dd>
               </div>
               <div>
                 <dt>Archive</dt>

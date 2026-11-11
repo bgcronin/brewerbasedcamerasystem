@@ -428,10 +428,12 @@ function Stage({ lastCapture }: { lastCapture?: Capture }) {
             <>
               <span className="source-name">{status === 'live' ? label : 'No camera'}</span>
               {status === 'live' && info && (
-                <span className="source-meta">
-                  {kindLabel(kind) !== 'Camera' && <>{kindLabel(kind)} · </>}
-                  {info.width}×{info.height}
-                  {info.frameRate ? ` · ${info.frameRate} fps` : ''}
+                <span className="source-meta meta-row">
+                  {kindLabel(kind) !== 'Camera' && <span>{kindLabel(kind)}</span>}
+                  <span>
+                    {info.width}×{info.height}
+                    {info.frameRate ? ` at ${info.frameRate} fps` : ''}
+                  </span>
                 </span>
               )}
             </>
@@ -444,7 +446,7 @@ function Stage({ lastCapture }: { lastCapture?: Capture }) {
             </>
           ) : (
             <>
-              <span className="source-name">Canon EOS · tethered</span>
+              <span className="source-name">Canon EOS, tethered</span>
               <span className="source-meta">{tether.watching ? `Watching “${tether.name}”` : 'Not watching'}</span>
             </>
           )}
@@ -519,7 +521,7 @@ function Filmstrip({ today }: { today: Capture[] }) {
         <span className="film-title">Today</span>
         {viewedDate !== todayISO() && (
           <span className="film-note" title="The clinic list is showing another day. New photos are always filed under today's visit.">
-            List shows {relativeDayLabel(viewedDate)} · new photos file under today
+            List shows {relativeDayLabel(viewedDate)}; new photos file under today
           </span>
         )}
         {today.length > 0 && (
@@ -532,7 +534,7 @@ function Filmstrip({ today }: { today: Capture[] }) {
         <span className="flex-1" />
         {patient && total > today.length && (
           <button type="button" className="link-btn" onClick={() => setView('review')}>
-            {total - today.length} earlier · View history
+            View {total - today.length} earlier
           </button>
         )}
       </div>

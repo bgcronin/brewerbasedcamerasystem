@@ -303,7 +303,7 @@ export async function importToList(records: ImportedRecord[], defaultDate: strin
       summary.dates.length > 1 && `across ${summary.dates.length} days`,
     ]
       .filter(Boolean)
-      .join(' · '),
+      .join(', '),
   });
 }
 

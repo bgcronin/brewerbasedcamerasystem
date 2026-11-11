@@ -57,8 +57,8 @@ export function CameraSheet() {
   const canonDetail =
     canonLink === 'online'
       ? canonCam?.state === 'connected'
-        ? `Connected · live view, settings and presets${helper?.backend === 'simulator' ? ' · simulated camera' : ''}`
-        : canonCam?.message ?? 'Camera Link is running · waiting for the camera'
+        ? `Connected: live view, settings and presets${helper?.backend === 'simulator' ? ' (simulated camera)' : ''}`
+        : canonCam?.message ?? 'Camera Link is running, waiting for the camera'
       : canonOn
         ? 'Camera Link isn’t running on this computer yet'
         : 'Needs Lumen Camera Link running on this computer';
@@ -74,7 +74,7 @@ export function CameraSheet() {
       <div className="sheet-body">
         <section className="source-section">
           <div className="source-section-head">
-            <h3>Canon EOS · direct</h3>
+            <h3>Canon EOS, direct</h3>
             <span className="source-badge">Recommended</span>
           </div>
           <p className="section-note">
@@ -116,7 +116,7 @@ export function CameraSheet() {
                       <strong>{d.label}</strong>
                       <span>
                         {kindLabel(d.kind)}
-                        {on && info && ` · ${info.width}×${info.height}`}
+                        {on && info && `, ${info.width}×${info.height}`}
                         {on && info?.maxWidth && info.maxWidth > info.width && ` (up to ${info.maxWidth}×${info.maxHeight})`}
                       </span>
                     </span>
@@ -148,7 +148,7 @@ export function CameraSheet() {
 
         <section className="source-section">
           <div className="source-section-head">
-            <h3>Folder watch · EOS Utility or CSO Phoenix</h3>
+            <h3>Folder watch: EOS Utility or CSO Phoenix</h3>
           </div>
           <p className="section-note">
             The fallback when Camera Link isn’t available. Point EOS Utility’s <em>Remote Shooting</em> (or CSO Phoenix) at a folder, and Lumen files each new photo to the selected patient and eye.
@@ -171,7 +171,7 @@ export function CameraSheet() {
                     ? 'Watching for new photos'
                     : tether.status === 'needs-permission'
                       ? 'Click to allow access again'
-                      : 'Folder watch · JPEG at full sensor resolution'}
+                      : 'JPEGs at full sensor resolution'}
               </span>
             </span>
             {settings.source === 'tether' && tether.watching ? <StatusDot tone="live" /> : <Icon name="chevronRight" size={16} />}

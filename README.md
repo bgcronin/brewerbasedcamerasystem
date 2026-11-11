@@ -6,7 +6,9 @@ Browser-based slit lamp photography for the ophthalmology clinic. Import the day
 
 - **Runs entirely on the clinic PC.** Nothing is uploaded. Patient details and photographs live in the browser's database and, optionally, in an archive folder you choose (a local drive or network share).
 - **Works with your cameras.** The Canon EOS connects directly through **Lumen Camera Link**, built on Canon's SDK: live view in Lumen, the shutter fired from Lumen or a foot switch, and ISO, shutter speed, aperture and white balance with a preset for each illumination. The CSO Mizar (or any USB camera) gives live view and capture in the browser.
-- **Built for the slit lamp room.** A dark "Night" theme that doesn't spoil dark adaptation, a large shutter, Space or foot-switch capture, R/L eye keys, and safety cues: the eye colour runs through the live view, the shutter ring and every thumbnail.
+- **Built for the slit lamp room.** A clean, white Day look by default, and a Night theme that doesn't spoil dark adaptation. A large shutter, Space or foot-switch capture, R/L eye keys, and safety cues: the eye colour runs through the live view, the shutter ring and every thumbnail. Hospital numbers are set in Atkinson Hyperlegible, whose 0 and O can't be confused.
+
+![Night theme](docs/screenshots/night-theme.webp)
 
 | Import a clinic list | Review, compare, export |
 | --- | --- |
@@ -161,7 +163,7 @@ Archive/
 | R · L · B | Right (OD) · Left (OS) · Both (OU) | / | Search patients |
 | 1 – 8 · 0 | Illumination technique · clear | V | Capture ⇄ Review |
 | G | Centring reticle | F | Full-screen live view |
-| ← → | Previous / next photo (viewer) | S · I · Del | Star · details · delete |
+| ← → | Previous / next photo (viewer) | S, I, Del | Star, details, delete |
 
 Press **?** in the app for the full list.
 

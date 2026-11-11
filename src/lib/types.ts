@@ -118,7 +118,7 @@ export const DEFAULT_SETTINGS: Settings = {
   keepTetherOriginals: false,
   removeTetherOriginals: false,
   shutterSound: true,
-  theme: 'dark',
+  theme: 'light',
   captureKeys: ['Space'],
   dateOrder: 'auto',
   reticle: false,

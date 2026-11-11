@@ -194,7 +194,7 @@ export function formatLongDate(iso: string): string {
 
 /** 14:32 */
 export function formatClock(ts: number): string {
-  return fmt({ hour: '2-digit', minute: '2-digit' }).format(new Date(ts));
+  return fmt({ hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(ts));
 }
 
 export function relativeDayLabel(iso: string): string {

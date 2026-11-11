@@ -128,9 +128,14 @@ export function ReviewView() {
         <div className="review-id">
           <h1>{displayName(patient)}</h1>
           <p>
-            {[patient.mrn, patient.dob && `Born ${formatShortDate(patient.dob)}${age != null ? ` (${age})` : ''}`].filter(Boolean).join(' · ')}
+            {patient.mrn && <span className="mrn">{patient.mrn}</span>}
+            {patient.dob && (
+              <span>
+                Born {formatShortDate(patient.dob)}
+                {age != null ? ` (${age})` : ''}
+              </span>
+            )}
             <span className="muted">
-              {' · '}
               {shown.length} photo{shown.length === 1 ? '' : 's'} across {byDate.length || 0} visit{byDate.length === 1 ? '' : 's'}
             </span>
           </p>
@@ -198,9 +203,11 @@ export function ReviewView() {
                 <h2 className="visit-head">
                   <span>{formatLongDate(date)}</span>
                   <span className="visit-meta">
-                    {list.length} photo{list.length === 1 ? '' : 's'}
-                    {v?.reason && ` · ${v.reason}`}
-                    {v?.clinician && ` · ${v.clinician}`}
+                    <span>
+                      {list.length} photo{list.length === 1 ? '' : 's'}
+                    </span>
+                    {v?.reason && <span>{v.reason}</span>}
+                    {v?.clinician && <span>{v.clinician}</span>}
                   </span>
                 </h2>
                 <div className="eye-columns">
@@ -237,7 +244,7 @@ export function ReviewView() {
 
       {selecting && (
         <div className="select-bar">
-          <span>{selected.length === 2 ? 'Ready to compare' : `Select two photos · ${selected.length} of 2`}</span>
+          <span>{selected.length === 2 ? 'Ready to compare' : `Select two photos (${selected.length} of 2)`}</span>
           <Button size="sm" variant="primary" disabled={selected.length !== 2} onClick={() => (openCompare(selected[0], selected[1]), setSelecting(false), setSelected([]))}>
             Compare
           </Button>

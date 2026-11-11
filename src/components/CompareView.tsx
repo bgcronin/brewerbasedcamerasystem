@@ -16,9 +16,9 @@ function Pane({ c, view, onView }: { c: Capture; view: ZoomState; onView: (v: Zo
       <div className="compare-label glass">
         <EyeTag eye={c.eye} />
         <strong>{formatShortDate(c.date)}</strong>
-        <span>
-          {formatClock(c.takenAt)}
-          {c.technique && ` · ${techniqueLabel(c.technique)}`}
+        <span className="meta-row">
+          <span>{formatClock(c.takenAt)}</span>
+          {c.technique && <span>{techniqueLabel(c.technique)}</span>}
         </span>
       </div>
     </div>
