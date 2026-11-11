@@ -2,6 +2,7 @@
  * Canon EOS "direct" source: talks to Lumen Camera Link (helper/) on this
  * computer, which drives the camera through Canon's EDSDK.
  */
+import * as db from '../lib/db';
 import { create } from 'zustand';
 import { playShutter } from '../lib/sound';
 import { displayName } from '../lib/names';
@@ -99,8 +100,8 @@ export function linkUrl(): string {
  * True in a window that is not the working Lumen window (another one holds the lock, or took over).
  * Such a window must stay off the camera: two windows on the link is how photos get misfiled.
  */
-function isSecondary(s: unknown = useApp.getState()): boolean {
-  return !!(s as { secondary?: boolean }).secondary;
+function isSecondary(s = useApp.getState()): boolean {
+  return s.secondary;
 }
 
 export function startLink(): void {
@@ -294,11 +295,8 @@ function onBinary(buf: ArrayBuffer) {
     const view = new DataView(buf);
     const headerLen = view.getUint32(1);
     const header = JSON.parse(new TextDecoder().decode(bytes.subarray(5, 5 + headerLen))) as PhotoHeader;
-    // Tell the helper straight away that the photo is here. Without this it saves its own copy
-    // to the Unfiled folder, so that a window which has frozen or closed never costs a photo.
-    if (header.photoId) send({ type: 'photo-ack', photoId: header.photoId });
     const data = bytes.subarray(5 + headerLen);
-    void onPhoto(header, new Blob([data], { type: 'image/jpeg' }));
+    void receivePhoto(header, new Blob([data], { type: 'image/jpeg' }));
   }
 }
 
@@ -366,6 +364,29 @@ function deviceLabel(): string {
   return useCanon.getState().camera?.model ?? 'Canon EOS';
 }
 
+/** Where a photo is kept from the moment it arrives until it has been filed or put in the waiting banner. */
+export const INCOMING_PREFIX = 'incoming:';
+
+/**
+ * A photo has arrived from the helper. It is written to the browser's database first and only
+ * then acknowledged: the helper drops its own copy on that word, so from here on Lumen must not
+ * be able to lose the photo, even if the window closes while it is being processed. Anything
+ * left here by a window that did close is picked up at the next start (see the store's init).
+ */
+async function receivePhoto(header: PhotoHeader, blob: Blob): Promise<void> {
+  const key = `${INCOMING_PREFIX}${header.photoId ?? `${header.name}:${header.takenAt}`}`;
+  const kept = await db.kvSet(key, { header, blob }).then(
+    () => true,
+    () => false,
+  );
+  if (header.photoId) send({ type: 'photo-ack', photoId: header.photoId });
+  try {
+    await onPhoto(header, blob);
+  } finally {
+    if (kept) void db.kvDelete(key).catch(() => undefined);
+  }
+}
+
 async function onPhoto(h: PhotoHeader, blob: Blob) {
   const file = new File([blob], h.name, { type: 'image/jpeg', lastModified: h.takenAt });
   const label = deviceLabel();
@@ -415,11 +436,12 @@ async function onPhoto(h: PhotoHeader, blob: Blob) {
           }
         : {}),
       exposure: h.exposure,
+      quiet: true,
     },
     filed?.patient,
   );
   if (!saved) {
-    holdPhoto(held);
+    holdPhoto(held, 'failed');
     return;
   }
   if (late) toast({ tone: 'success', message: 'The photo arrived after all', detail: `Filed to ${displayName(late.patient)}, ${late.eye}.`, duration: 7000 });

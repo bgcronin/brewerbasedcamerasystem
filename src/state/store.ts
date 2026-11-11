@@ -221,11 +221,25 @@ export async function init(): Promise<void> {
   // Finish what the last session left: deletes still in their undo window when the window
   // was closed, and photos that were waiting for a patient.
   for (const c of await db.deletedCaptures()) await commitDelete(c.id);
-  const waiting = await db.kvGet<HeldPhoto[]>('heldPhotos');
-  if (waiting?.length) set({ held: waiting });
+  // From here on the waiting list is written to the database whenever it changes.
   useApp.subscribe((s, prev) => {
     if (s.held !== prev.held) void db.kvSet('heldPhotos', s.held).catch(() => undefined);
   });
+  const waiting = (await db.kvGet<HeldPhoto[]>('heldPhotos')) ?? [];
+  // Photos the camera helper had handed over when the window closed, before they were filed.
+  const handedOver = await db.kvKeys('incoming:');
+  for (const key of handedOver) {
+    const item = await db.kvGet<{ header: { name: string; takenAt: number; exposure?: Capture['exposure'] }; blob: Blob }>(key);
+    if (!item?.blob) continue;
+    const file = new File([item.blob], item.header.name, { type: 'image/jpeg', lastModified: item.header.takenAt });
+    waiting.push({ file, receivedAt: Date.now(), source: 'canon', exposure: item.header.exposure });
+  }
+  if (waiting.length) set({ held: waiting });
+  // Only once they are safely on the waiting list are the hand-over copies let go.
+  if (handedOver.length) {
+    await db.kvSet('heldPhotos', waiting);
+    for (const key of handedOver) await db.kvDelete(key);
+  }
 
   await Promise.all([loadRows(), refreshPending(), refreshAllPatients()]);
   // Photos, relabels, marks and removals that never reached the archive folder are put right now.
@@ -494,6 +508,8 @@ interface IngestInput {
   technique?: string | null;
   diagnoses?: string[];
   exposure?: Capture['exposure'];
+  /** Say nothing if the photo can't be stored: the caller will (it still has the photo, and says where it went). */
+  quiet?: boolean;
 }
 
 /** The single path every photo takes into the system: encode → store → archive. */
@@ -589,7 +605,7 @@ export async function ingest(input: IngestInput, patientOverride?: Patient): Pro
     }
     return capture;
   } catch (e) {
-    toast({ tone: 'error', message: 'Photo not saved', detail: (e as Error).message });
+    if (!input.quiet) toast({ tone: 'error', message: 'Photo not saved', detail: (e as Error).message });
     return null;
   } finally {
     set((st) => ({ processing: st.processing - 1 }));
@@ -1267,10 +1283,17 @@ async function onTetherFile(file: File, path: string, _handle: FileSystemFileHan
   });
 }
 
-/** A photo arrived with no patient selected: keep it until one is chosen. */
-export function holdPhoto(h: HeldPhoto): void {
+/**
+ * Keep a photo in the waiting banner: it arrived with no patient selected, or (`'failed'`) it
+ * could not be stored just now. Either way it is not lost, and it survives a reload.
+ */
+export function holdPhoto(h: HeldPhoto, why: 'no-patient' | 'failed' = 'no-patient'): void {
   const first = get().held.length === 0;
   set((s) => ({ held: [...s.held, h] }));
+  if (why === 'failed') {
+    toast({ tone: 'error', message: 'Photo not filed yet', detail: 'It couldn’t be stored just now, so it is waiting above the live view. Choose “File to” to try again.', duration: 9000 });
+    return;
+  }
   // One notice is enough: the banner over the live view keeps count of the rest.
   if (first) toast({ tone: 'warning', message: 'Photo received. Choose a patient', detail: 'It’s waiting and will be filed to the patient you select.' });
 }
@@ -1285,7 +1308,7 @@ export async function fileHeldPhoto(h: HeldPhoto, patient?: Patient, labels?: La
   const fileTime = h.file.lastModified;
   const takenAt = fileTime && Math.abs(fileTime - h.receivedAt) < 10 * 60_000 ? fileTime : h.receivedAt;
   const c = await ingest(
-    { original: h.file, source: h.source, deviceLabel: label, transform: transformFor(label), takenAt, exposure: h.exposure, ...(labels ? labelInput(labels) : {}) },
+    { original: h.file, source: h.source, deviceLabel: label, transform: transformFor(label), takenAt, exposure: h.exposure, quiet: true, ...(labels ? labelInput(labels) : {}) },
     patient,
   );
   if (!c) return false;
@@ -1315,7 +1338,15 @@ export async function fileHeldPhotos(): Promise<void> {
   const failed: HeldPhoto[] = [];
   for (const h of held) if (!(await fileHeldPhoto(h, patient, labels))) failed.push(h);
   // Anything that could not be read stays in the banner rather than disappearing.
-  if (failed.length) set((s) => ({ held: [...failed, ...s.held] }));
+  if (failed.length) {
+    set((s) => ({ held: [...failed, ...s.held] }));
+    toast({
+      tone: 'error',
+      message: `${failed.length} photo${failed.length === 1 ? '' : 's'} couldn’t be filed`,
+      detail: 'They are still waiting above the live view. Try again, or dismiss them if the files are damaged.',
+      duration: 9000,
+    });
+  }
   const filed = held.length - failed.length;
   if (filed) toast({ tone: 'success', message: `${filed} waiting photo${filed === 1 ? '' : 's'} filed to ${displayName(patient)}` });
 }

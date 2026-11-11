@@ -44,6 +44,11 @@ export async function kvSet(key: string, value: unknown): Promise<void> {
 export async function kvDelete(key: string): Promise<void> {
   await (await db()).delete('kv', key);
 }
+/** The keys that start with `prefix`. */
+export async function kvKeys(prefix: string): Promise<string[]> {
+  const keys = await (await db()).getAllKeys('kv');
+  return keys.filter((k) => typeof k === 'string' && k.startsWith(prefix));
+}
 /** Read, change and write one value in a single transaction, so two updates can never overwrite each other. */
 export async function kvUpdate<T>(key: string, change: (current: T | undefined) => T): Promise<T> {
   const tx = (await db()).transaction('kv', 'readwrite');
