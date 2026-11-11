@@ -404,6 +404,9 @@ export async function importToList(records: ImportedRecord[], defaultDate: strin
   const target = summary.dates.includes(get().date) ? get().date : summary.dates[0] ?? defaultDate;
   await setDate(target);
   await refreshAllPatients();
+  // The import may have filled in the selected patient's record (a hospital number, say); what is on screen must be that record, not the one from before.
+  const active = get().activePatientId;
+  if (active) await selectPatient(active);
   const n = summary.listed + summary.alreadyListed;
   toast({
     tone: 'success',
@@ -416,6 +419,15 @@ export async function importToList(records: ImportedRecord[], defaultDate: strin
       .filter(Boolean)
       .join(', '),
   });
+  const say = (lines: string[]) => lines.slice(0, 3).join('. ') + (lines.length > 3 ? `, and ${lines.length - 3} more` : '') + '.';
+  if (summary.conflicts.length) {
+    const k = summary.conflicts.length;
+    toast({ tone: 'error', message: `${k} row${k === 1 ? ' was' : 's were'} not imported`, detail: `${say(summary.conflicts)} Check the hospital number, then add ${k === 1 ? 'that patient' : 'them'} by hand.`, duration: 60000 });
+  }
+  if (summary.keptSeparate.length) {
+    const k = summary.keptSeparate.length;
+    toast({ tone: 'warning', message: `${k} new record${k === 1 ? '' : 's'} made rather than matched by name alone`, detail: say(summary.keptSeparate), duration: 30000 });
+  }
 }
 
 export interface PatientForm {

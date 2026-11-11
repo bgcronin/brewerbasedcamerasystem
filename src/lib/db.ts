@@ -1,4 +1,5 @@
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
+import { namesClearlyDiffer } from './importers/identity';
 import type { ImportedRecord } from './importers/types';
 import { uid } from './id';
 import type { Capture, Patient, StoredImage, Visit } from './types';
@@ -192,12 +193,26 @@ export interface ImportSummary {
   listed: number;
   alreadyListed: number;
   dates: string[];
+  /** Rows left out because their hospital number is on record for somebody with a different name. One sentence each. */
+  conflicts: string[];
+  /** Rows given a record of their own because only a name tied them to someone already on file. One sentence each. */
+  keptSeparate: string[];
 }
+
+const fullName = (p: { firstName: string; lastName: string }) => [p.lastName.toUpperCase(), p.firstName].filter(Boolean).join(', ') || 'an unnamed patient';
 
 /**
  * Merge imported records into the database. Patients are matched by MRN
- * (or, when no MRN is given, by name + date of birth) so the same person
+ * (or, when one side has no MRN, by name + date of birth) so the same person
  * keeps one photo history across clinic days.
+ *
+ * An import never renames anyone and never changes a date of birth: on a
+ * match it fills in only what the record did not have. A row whose hospital
+ * number belongs to somebody with a clearly different name is not attached to
+ * them (a misread or mistyped number must not move one patient's visit onto
+ * another); it is left out and reported. A row that only a name connects to an
+ * existing patient is not merged either: it gets its own record, and that is
+ * reported too.
  */
 export async function importRecords(records: ImportedRecord[], defaultDate: string, source: string): Promise<ImportSummary> {
   const d = await db();
@@ -206,34 +221,70 @@ export async function importRecords(records: ImportedRecord[], defaultDate: stri
   const visits = tx.objectStore('visits');
   const all = await patients.getAll();
   const byMrn = new Map(all.filter((p) => normaliseMrn(p.mrn)).map((p) => [normaliseMrn(p.mrn), p]));
-  const byNameDob = new Map(all.map((p) => [nameDobKey(p), p]));
-  const summary: ImportSummary = { added: 0, updated: 0, listed: 0, alreadyListed: 0, dates: [] };
+  const byNameDob = new Map(all.filter((p) => p.dob).map((p) => [nameDobKey(p), p]));
+  const nameKey = (p: { firstName: string; lastName: string }) => nameDobKey({ ...p, dob: undefined });
+  const byName = new Map<string, Patient[]>();
+  const remember = (p: Patient) => {
+    const list = (byName.get(nameKey(p)) ?? []).filter((x) => x.id !== p.id);
+    byName.set(nameKey(p), [...list, p]);
+    if (normaliseMrn(p.mrn)) byMrn.set(normaliseMrn(p.mrn), p);
+    if (p.dob) byNameDob.set(nameDobKey(p), p);
+  };
+  all.forEach(remember);
+  const summary: ImportSummary = { added: 0, updated: 0, listed: 0, alreadyListed: 0, dates: [], conflicts: [], keptSeparate: [] };
   const dates = new Set<string>();
   const now = Date.now();
 
   const seenThisImport = new Set<string>();
 
   for (const r of records) {
-    const key = nameDobKey(r);
     const mrnKey = normaliseMrn(r.mrn);
-    const nameMatch = byNameDob.get(key);
-    // Match on MRN first; fall back to name + DOB only when one side has no MRN to compare.
-    let p = (mrnKey && byMrn.get(mrnKey)) || (nameMatch && (!mrnKey || !normaliseMrn(nameMatch.mrn)) ? nameMatch : undefined);
+    const date = r.date ?? defaultDate;
+    let p: Patient | undefined;
+    const holder = mrnKey ? byMrn.get(mrnKey) : undefined;
+    if (holder) {
+      // Same number. The same person unless the name is plainly someone else's and the date of birth does not vouch for them.
+      const sameBirth = !!r.dob && !!holder.dob && r.dob === holder.dob;
+      if (namesClearlyDiffer(r, holder) && !sameBirth) {
+        summary.conflicts.push(`${holder.mrn} already belongs to ${fullName(holder)}; the row for ${fullName(r)} was left out`);
+        continue;
+      }
+      p = holder;
+    } else if (r.dob) {
+      // Name and date of birth, when one side has no MRN to compare.
+      const twin = byNameDob.get(nameDobKey(r));
+      if (twin && (!mrnKey || !normaliseMrn(twin.mrn))) p = twin;
+    } else {
+      // Only a name to go on. That is not enough to say it is the same person…
+      const namesakes = (byName.get(nameKey(r)) ?? []).filter((x) => !mrnKey || !normaliseMrn(x.mrn));
+      if (!mrnKey) {
+        // …unless it is plainly this same list being imported again: no number or date of birth on either side, already on that day.
+        for (const x of namesakes) {
+          if (!normaliseMrn(x.mrn) && !x.dob && (seenThisImport.has(x.id) || (await visits.index('patientDate').get([x.id, date])))) {
+            p = x;
+            break;
+          }
+        }
+      }
+      if (!p && namesakes.length) summary.keptSeparate.push(`${fullName(r)} has no ${mrnKey ? '' : 'hospital number or '}date of birth to match on, so a new record was made rather than adding to the ${fullName(namesakes[0])} already on file`);
+    }
     if (p) {
       const merged: Patient = {
         ...p,
         mrn: p.mrn || r.mrn || '',
-        firstName: r.firstName || p.firstName,
-        lastName: r.lastName || p.lastName,
-        dob: r.dob ?? p.dob,
-        sex: r.sex || p.sex,
-        updatedAt: now,
+        firstName: p.firstName || r.firstName,
+        lastName: p.lastName || r.lastName,
+        dob: p.dob ?? r.dob,
+        sex: p.sex || r.sex || '',
       };
-      await patients.put(merged);
+      const changed = merged.mrn !== p.mrn || merged.firstName !== p.firstName || merged.lastName !== p.lastName || merged.dob !== p.dob || merged.sex !== p.sex;
+      if (changed) {
+        merged.updatedAt = now;
+        await patients.put(merged);
+      }
       p = merged;
       // Keep the look-ups current so a second row for the same person matches too.
-      if (normaliseMrn(p.mrn)) byMrn.set(normaliseMrn(p.mrn), p);
-      byNameDob.set(nameDobKey(p), p);
+      remember(p);
       if (!seenThisImport.has(p.id)) summary.updated++;
     } else {
       p = {
@@ -248,13 +299,11 @@ export async function importRecords(records: ImportedRecord[], defaultDate: stri
         updatedAt: now,
       };
       await patients.put(p);
-      if (normaliseMrn(p.mrn)) byMrn.set(normaliseMrn(p.mrn), p);
-      byNameDob.set(key, p);
+      remember(p);
       summary.added++;
     }
     seenThisImport.add(p.id);
 
-    const date = r.date ?? defaultDate;
     dates.add(date);
     const existing = await visits.index('patientDate').get([p.id, date]);
     if (existing) {
