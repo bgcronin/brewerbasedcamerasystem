@@ -25,7 +25,7 @@ self.addEventListener('activate', (e) => {
   e.waitUntil(
     caches.keys()
       .then((keys) => {
-        const old = keys.filter((k) => k.startsWith('lumen-') && k !== CACHE).sort();
+        const old = keys.filter((k) => k.startsWith('lumen-') && !k.endsWith('-ocr') && k !== CACHE).sort();
         return Promise.all(old.slice(0, -1).map((k) => caches.delete(k)));
       })
       .then(() => self.clients.claim()),
@@ -36,6 +36,13 @@ self.addEventListener('fetch', (e) => {
   if (req.method !== 'GET' || new URL(req.url).origin !== self.location.origin) return;
   if (req.mode === 'navigate') {
     e.respondWith(fetch(req).catch(() => caches.match('./index.html')));
+    return;
+  }
+  // The text reader's engine and language data are large, so they're cached on first use rather than at install.
+  if (/\/ocr\//.test(req.url)) {
+    e.respondWith(
+      caches.open(CACHE + '-ocr').then((c) => c.match(req).then((hit) => hit || fetch(req).then((res) => (res.ok && c.put(req, res.clone()), res)))),
+    );
     return;
   }
   e.respondWith(caches.match(req).then((hit) => hit || fetch(req)));

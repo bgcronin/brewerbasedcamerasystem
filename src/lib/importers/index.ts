@@ -35,12 +35,27 @@ export const jsonImporter: WorklistImporter = {
   },
 };
 
+/** A printed list: PDF (its own text, or OCR for scans), or a photo / scan as PNG, JPEG or WebP. Read entirely on this computer. */
+export const scanImporter: WorklistImporter = {
+  id: 'scan',
+  label: 'PDF, scan or photo of the printed list',
+  description: 'Read on this computer; nothing is uploaded.',
+  accept: '.pdf,.png,.jpg,.jpeg,.webp,application/pdf,image/png,image/jpeg,image/webp',
+  matches: (f) => ['pdf', 'png', 'jpg', 'jpeg', 'webp'].includes(ext(f)) || f.type === 'application/pdf' || /^image\/(png|jpeg|webp)$/.test(f.type),
+  async read(file, onProgress): Promise<ImportResult> {
+    const { scanList } = await import('./scan');
+    const r = await scanList(file, onProgress);
+    const flaggedRows = r.parsed.map((p, i) => (p.flagged ? i : -1)).filter((i) => i >= 0);
+    return { kind: 'table', table: { rows: r.rows }, sourceName: file.name, notes: r.notes, flaggedRows };
+  },
+};
+
 /**
  * Registered importers, tried in order. To add a new source (HL7 SIU/ORM,
  * FHIR Appointment bundles, a direct EMR feed), implement WorklistImporter
  * and add it here — the import sheet picks it up automatically.
  */
-export const IMPORTERS: WorklistImporter[] = [delimitedImporter, jsonImporter];
+export const IMPORTERS: WorklistImporter[] = [delimitedImporter, jsonImporter, scanImporter];
 
 export function importerFor(file: File): WorklistImporter | undefined {
   return IMPORTERS.find((i) => i.matches(file));

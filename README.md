@@ -99,7 +99,9 @@ Most USB foot pedals act as a keyboard. Program the pedal to send **Space**, or 
 
 ---
 
-## Patient lists (CSV)
+## Patient lists
+
+### From a CSV export
 
 Any CSV, TSV or text export works, including rows copied straight from Excel or your PAS and pasted into the import sheet. Lumen recognises common headings:
 
@@ -115,6 +117,17 @@ Any CSV, TSV or text export works, including rows copied straight from Excel or 
 - Patients are matched across days by **MRN** (spacing and case are ignored, so `123 456 7890` and `1234567890` are the same number), so each person keeps one photo history. Without an MRN, matching falls back to name + date of birth. Two patients can never share an MRN: adding a patient with a known MRN attaches a visit to the existing record instead.
 - Each patient's archive folder name is fixed the first time a photo is written, so correcting a name or adding an MRN later never splits their history.
 - A sample list is in [`public/sample-worklist.csv`](public/sample-worklist.csv). Every patient in it is fictitious.
+
+### From a printed list: PDF, scan or photo
+
+Drop a **PDF**, or a **PNG / JPEG** scan or phone photo of the printed clinic list, onto the window (or choose it from *Import list*). Lumen reads it **entirely on this computer**:
+
+- A PDF with a text layer (what most patient systems print) is read exactly from its text.
+- A scan, a photo, or an image-only PDF is read with Tesseract OCR running inside the browser. The OCR engine and its English language data are copied into Lumen's own folder at build time (`public/ocr`, about 23 MB), so nothing is fetched from the internet and no image ever leaves the PC. The test suite checks that no network request is made during an import.
+
+Each line is read for a **hospital number** (by its shape, e.g. `H100234` or an NHS number), a **date of birth**, a **time** and the **name**; headings, page footers and the clinic title are dropped. OCR can misread, so the import sheet highlights any row where something was missing or hard to read, and the preview shows exactly what will be saved before you confirm. Names split into surname and forename just as with CSV, and patients are matched to existing records by hospital number, so re-importing a list never creates duplicates.
+
+Tips for photos: fill the frame with the list, keep it flat and evenly lit, and avoid shadows across the numbers. A list of 12 patients takes about two seconds to read.
 
 ### Adding other import systems
 
@@ -179,6 +192,7 @@ src/
   components/     React UI
   styles/         design tokens (tokens.css), base controls, layout
   workers/        image encoder (OffscreenCanvas)
+scripts/          copy-ocr-assets.mjs: puts the OCR engine + language data in public/ocr (runs before dev/build)
 helper/           Lumen Camera Link: Node + koffi bindings to Canon's EDSDK, simulator, local server
 tests/            unit tests (Vitest) and end-to-end tests (Playwright)
 ```
@@ -188,6 +202,7 @@ npm test            # unit tests: CSV, dates, names, column mapping, ZIP, databa
 npm run typecheck
 node tests/e2e/smoke.cjs   # with `npm start` running; needs Playwright + Chromium
 node tests/e2e/canon.cjs   # after `npm run build`; starts the helper's simulated EOS 60D itself
+node tests/e2e/scan.cjs    # with `npm start` running; imports a printed list as PDF and as a photo (OCR)
 cd helper && npm test      # runs the real Canon SDK bindings against a stand-in library (needs a C compiler)
 ```
 

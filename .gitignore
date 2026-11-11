@@ -9,3 +9,6 @@ test-results
 helper/sdk/*
 !helper/sdk/README.md
 helper/node_modules
+
+# Copied from node_modules by scripts/copy-ocr-assets.mjs (large binaries)
+public/ocr

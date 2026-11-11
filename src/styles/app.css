@@ -2712,3 +2712,59 @@ button.cam-preset:hover {
     grid-template-columns: minmax(0, 1fr) 260px;
   }
 }
+
+/* ───────── Reading a printed list ───────── */
+
+.import-reading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 44px 24px 48px;
+  text-align: center;
+}
+.import-reading strong {
+  font-size: var(--fs-md);
+  font-weight: 600;
+  margin-top: 10px;
+}
+.import-reading span {
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+}
+.import-reading-bar {
+  width: 240px;
+  height: 4px;
+  border-radius: 4px;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+.import-reading-bar i {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+  background: var(--accent);
+  transition: width 240ms var(--ease);
+}
+.import-reading-bar i.is-indeterminate {
+  width: 40% !important;
+  animation: bar-slide 1.2s var(--ease) infinite;
+}
+@keyframes bar-slide {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(250%);
+  }
+}
+.import-notes {
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+}
+.map-table tr.is-flagged td {
+  background: var(--warning-soft);
+}
+.map-table tr.is-flagged td:first-child {
+  box-shadow: inset 2px 0 0 var(--warning);
+}

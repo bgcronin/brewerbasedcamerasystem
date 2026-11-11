@@ -50,10 +50,17 @@ export async function openFileForImport(file: File): Promise<void> {
     toast({ tone: 'warning', message: 'That file type can’t be imported', detail: 'Use a CSV, TSV or JSON list.' });
     return;
   }
+  // Reading a scan can take a few seconds, so show progress in the sheet rather than a blank wait.
+  openSheet({ type: 'import', reading: { name: file.name, label: 'Opening' } });
   try {
-    const result = await importer.read(file);
+    const result = await importer.read(file, (p) => {
+      const s = useApp.getState().sheet;
+      if (s?.type === 'import' && s.reading) openSheet({ type: 'import', reading: { name: file.name, ...p } });
+    });
+    if (useApp.getState().sheet?.type !== 'import') return; // closed while reading
     openSheet({ type: 'import', result });
   } catch (e) {
+    openSheet({ type: 'import' });
     toast({ tone: 'error', message: 'Couldn’t read that file', detail: (e as Error).message });
   }
 }

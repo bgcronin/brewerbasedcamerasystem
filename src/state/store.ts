@@ -40,7 +40,7 @@ export interface Toast {
 }
 
 export type Sheet =
-  | { type: 'import'; result?: ImportResult }
+  | { type: 'import'; result?: ImportResult; reading?: { name: string; label: string; progress?: number } }
   | { type: 'patient'; patientId?: string; visitId?: string }
   | { type: 'settings' }
   | { type: 'shortcuts' }

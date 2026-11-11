@@ -52,8 +52,8 @@ function ChooseSource({ onResult }: { onResult: (r: ImportResult) => void }) {
         <span className="dropzone-icon">
           <Icon name="import" size={24} />
         </span>
-        <strong>Choose a CSV file</strong>
-        <span>or drop it here (CSV, TSV, TXT or JSON)</span>
+        <strong>Choose the clinic list</strong>
+        <span>A CSV export, or a PDF, scan or photo of the printed list. Read on this computer; nothing is uploaded.</span>
       </button>
       <input
         ref={input}
@@ -138,6 +138,7 @@ function MapColumns({ result, onBack }: { result: Extract<ImportResult, { kind: 
       <div className="import-file">
         <Icon name="list" size={16} />
         <strong>{result.sourceName}</strong>
+        {result.notes && <span className="import-notes">{result.notes}</span>}
         <span className="muted">
           {dataRows.length} row{dataRows.length === 1 ? '' : 's'}, {width} column{width === 1 ? '' : 's'}
         </span>
@@ -172,8 +173,8 @@ function MapColumns({ result, onBack }: { result: Extract<ImportResult, { kind: 
             </tr>
           </thead>
           <tbody>
-            {dataRows.slice(0, 6).map((r, ri) => (
-              <tr key={ri}>
+            {dataRows.slice(0, result.flaggedRows?.length ? 12 : 6).map((r, ri) => (
+              <tr key={ri} className={cx(result.flaggedRows?.includes(ri) && 'is-flagged')} title={result.flaggedRows?.includes(ri) ? 'Check this row: something was missing or hard to read' : undefined}>
                 {headers.map((_, i) => (
                   <td key={i} className={cx(fullMapping[i] === 'ignore' && 'is-ignored')}>
                     {r[i] ?? ''}
@@ -267,6 +268,7 @@ function MapColumns({ result, onBack }: { result: Extract<ImportResult, { kind: 
 export function ImportSheet() {
   const sheet = useApp((s) => s.sheet);
   const open = sheet?.type === 'import';
+  const reading = open ? sheet.reading : undefined;
   const [result, setResult] = useState<ImportResult | undefined>();
   const [nonce, setNonce] = useState(0);
 
@@ -298,7 +300,19 @@ export function ImportSheet() {
         subtitle={result ? 'Check that each column is matched to the right field.' : 'Bring in the day’s patients from your PAS or EMR export.'}
         onClose={closeSheet}
       />
-      {result?.kind === 'table' ? <MapColumns key={nonce} result={result} onBack={() => setResult(undefined)} /> : <ChooseSource onResult={onResult} />}
+      {reading ? (
+        <div className="import-reading" role="status">
+          <div className="import-reading-bar" aria-hidden="true">
+            <i style={{ width: `${Math.round((reading.progress ?? 0) * 100)}%` }} className={cx(reading.progress == null && 'is-indeterminate')} />
+          </div>
+          <strong>{reading.label}…</strong>
+          <span>{reading.name}</span>
+        </div>
+      ) : result?.kind === 'table' ? (
+        <MapColumns key={nonce} result={result} onBack={() => setResult(undefined)} />
+      ) : (
+        <ChooseSource onResult={onResult} />
+      )}
     </Modal>
   );
 }

@@ -45,8 +45,10 @@ export interface TabularData {
 }
 
 export type ImportResult =
-  | { kind: 'table'; table: TabularData; sourceName: string }
-  | { kind: 'records'; records: ImportedRecord[]; sourceName: string };
+  | { kind: 'table'; table: TabularData; sourceName: string; notes?: string; flaggedRows?: number[] }
+  | { kind: 'records'; records: ImportedRecord[]; sourceName: string; notes?: string };
+
+export type ImportProgress = (p: { label: string; progress?: number }) => void;
 
 export interface WorklistImporter {
   id: string;
@@ -55,5 +57,5 @@ export interface WorklistImporter {
   /** Value for <input type="file" accept>. */
   accept: string;
   matches(file: File): boolean;
-  read(file: File): Promise<ImportResult>;
+  read(file: File, onProgress?: ImportProgress): Promise<ImportResult>;
 }
