@@ -63,6 +63,18 @@ export const StateEvent = {
   InternalError: 0x00000306,
 };
 
+/** Plain names for the state events worth explaining in the log. */
+export const STATE_EVENT_NAMES = {
+  0x301: 'camera shutting down',
+  0x302: 'job status',
+  0x303: 'about to power off',
+  0x304: 'power-off timer',
+  0x305: 'capture error',
+  0x306: 'internal error',
+  0x309: 'autofocus result',
+  0x310: 'bulb exposure time',
+};
+
 export const DataType = {
   String: 2,
   Int32: 8,
@@ -72,6 +84,7 @@ export const DataType = {
 export const Err = {
   OK: 0x00000000,
   NOT_SUPPORTED: 0x00000007,
+  PROPERTIES_UNAVAILABLE: 0x00000050,
   INVALID_PARAMETER: 0x00000060,
   DEVICE_NOT_FOUND: 0x00000080,
   DEVICE_BUSY: 0x00000081,

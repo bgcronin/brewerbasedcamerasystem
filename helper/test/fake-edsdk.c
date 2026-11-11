@@ -5,9 +5,21 @@
  *   gcc -shared -fPIC -o libEDSDK.so fake-edsdk.c            (13.x interface)
  *   gcc -shared -fPIC -DGEN3 -o libEDSDK.so fake-edsdk.c     (3.x interface)
  *
+ * Like the real camera, each shot is announced according to where photos are saved:
+ * to the computer (SaveTo 2) a transfer request (0x208); to the memory card (SaveTo 1) a
+ * "new file on the card" event (0x204); to both (SaveTo 3), both events.
+ *
  * Environment: FAKE_RAW_JPEG=1 sends RAW+JPEG pairs; FAKE_RAW_ONLY=1 sends only the RAW;
+ * FAKE_JPEG_FIRST=1 offers the JPEG of a pair before its RAW;
  * FAKE_NO_CAMERA=1 reports no camera; FAKE_FAIL_SETCAPACITY=1 makes EdsSetCapacity fail;
- * FAKE_BUTTON_SHOT_AFTER_MS=N takes an extra "camera button" shot N ms after the first capture.
+ * FAKE_BUTTON_SHOT_AFTER_MS=N takes an extra "camera button" shot N ms after the first capture;
+ * FAKE_COLD_BUTTON_MS=N takes a "camera button" shot N ms after the session opens;
+ * FAKE_SAVETO_STUCK=1 accepts SaveTo but keeps saving to the card only;
+ * FAKE_SAVETO_BUSY_ONCE=1 answers "busy" to the first SaveTo write;
+ * FAKE_LATE_TRANSFER_MS=N delays each transfer request by N ms (the card event stays prompt);
+ * FAKE_CREATED_LAST=1 sends the card event after the transfer request instead of before;
+ * FAKE_GONE=1 answers "disconnected" to shutter commands.
+ * Build with -DNO_GETEVENT for a library without EdsGetEvent.
  */
 #include <stdint.h>
 #include <stdio.h>
@@ -34,6 +46,8 @@ typedef struct Ref {
   struct Ref *stream;
   char name[64];
   size_t size;
+  uint32_t event; /* the object event this item is announced with */
+  double due;     /* monotonic seconds before which it is held back */
 } Ref;
 
 typedef struct { char szPortName[256]; char szDeviceDescription[256]; uint32_t deviceSubType; uint32_t reserved; } EdsDeviceInfo;
@@ -46,11 +60,12 @@ static int g_session, g_capacity_set, g_transfers, g_completes, g_cancels, g_sho
 static ObjectHandler g_obj;
 static PropertyHandler g_prop;
 static StateHandler g_state;
-static void *g_pending_items[8];
+static void *g_pending_items[32];
 static int g_pending_count;
 static uint32_t g_pending_props[16];
 static int g_pending_prop_count;
 static double g_button_due; /* monotonic seconds; 0 = no button shot scheduled */
+static double now_s(void);
 
 static uint32_t p_iso = 0x58, p_av = 0x38, p_tv = 0x70, p_wb = 5, p_ae = 3, p_saveto = 1, p_evf = 1;
 static const int32_t ISO_DESC[] = {0x00, 0x48, 0x4b, 0x4d, 0x50, 0x53, 0x55, 0x58, 0x5b, 0x5d, 0x60, 0x63, 0x65, 0x68, 0x6b, 0x6d, 0x70, 0x73, 0x75, 0x78};
@@ -143,6 +158,8 @@ EdsError EdsGetDeviceInfo(void *cam, EdsDeviceInfo *info) {
 }
 EdsError EdsOpenSession(void *cam) {
   g_session = 1;
+  const char *cold = getenv("FAKE_COLD_BUTTON_MS");
+  if (cold) g_button_due = now_s() + atoi(cold) / 1000.0;
   return 0;
 }
 EdsError EdsCloseSession(void *cam) {
@@ -197,6 +214,11 @@ EdsError EdsSetPropertyData(void *ref, uint32_t id, int32_t param, uint32_t size
   memcpy(&v, in, 4);
   uint32_t *u;
   if (!uint_prop(id, &u)) return 0x200a;
+  if (id == 0x0b) {
+    static int was_busy;
+    if (getenv("FAKE_SAVETO_BUSY_ONCE") && !was_busy) { was_busy = 1; return 0x81; }
+    if (getenv("FAKE_SAVETO_STUCK")) { queue_prop(id); return 0; } /* accepted, but the camera keeps its own setting */
+  }
   if (id == 0x402 && !in_list(ISO_DESC, sizeof ISO_DESC / 4, v)) return 0x201c;
   if (id == 0x406 && (p_ae != 3 || !in_list(TV_DESC, sizeof TV_DESC / 4, v))) return 0x201c;
   if (id == 0x405 && (p_ae != 3 || !in_list(AV_DESC, sizeof AV_DESC / 4, v))) return 0x201c;
@@ -216,25 +238,37 @@ EdsError EdsGetPropertyDesc(void *ref, uint32_t id, EdsPropertyDesc *d) {
   return 0;
 }
 
-static void make_item(const char *name, size_t size) {
+static void queue_item(const char *name, size_t size, uint32_t event) {
   Ref *item = new_ref(K_ITEM);
   snprintf(item->name, sizeof item->name, "%s", name);
   item->size = size;
-  if (g_pending_count < 8) g_pending_items[g_pending_count++] = item;
+  item->event = event;
+  const char *late = getenv("FAKE_LATE_TRANSFER_MS");
+  if (event == 0x208 && late) item->due = now_s() + atoi(late) / 1000.0;
+  if (g_pending_count < 32) g_pending_items[g_pending_count++] = item;
+}
+
+/* Announce one file the way the camera does for the current SaveTo. */
+static void make_item(const char *name, size_t size) {
+  int to_card = p_saveto & 1, to_host = p_saveto & 2;
+  int created_last = getenv("FAKE_CREATED_LAST") != NULL;
+  if (to_card && !created_last) queue_item(name, size, 0x204);
+  if (to_host) queue_item(name, size, 0x208);
+  if (to_card && created_last) queue_item(name, size, 0x204);
 }
 
 /* One shot: the files the camera would offer for it, per image quality. */
 static void shoot(void) {
-  char name[32];
+  char raw[32], jpg[32];
   g_shots++;
-  if (getenv("FAKE_RAW_JPEG") || getenv("FAKE_RAW_ONLY")) {
-    snprintf(name, sizeof name, "IMG_%04d.CR2", g_shots);
-    make_item(name, 4096);
-  }
-  if (!getenv("FAKE_RAW_ONLY")) {
-    snprintf(name, sizeof name, "IMG_%04d.JPG", g_shots);
-    make_item(name, 200000);
-  }
+  snprintf(raw, sizeof raw, "IMG_%04d.CR2", g_shots);
+  snprintf(jpg, sizeof jpg, "IMG_%04d.JPG", g_shots);
+  int with_raw = getenv("FAKE_RAW_JPEG") || getenv("FAKE_RAW_ONLY");
+  int with_jpg = !getenv("FAKE_RAW_ONLY");
+  int jpg_first = getenv("FAKE_JPEG_FIRST") != NULL;
+  if (with_jpg && jpg_first) make_item(jpg, 200000);
+  if (with_raw) make_item(raw, 4096);
+  if (with_jpg && !jpg_first) make_item(jpg, 200000);
 }
 
 EdsError EdsSendCommand(void *cam, uint32_t cmd, int32_t param) {
@@ -242,7 +276,8 @@ EdsError EdsSendCommand(void *cam, uint32_t cmd, int32_t param) {
   if (cmd == 0x04 && param == 0) return 0;      /* shutter released */
   if (cmd == 0x01) return 0;                    /* keep awake */
   if ((cmd == 0x04 && (param & 0xff) == 3) || cmd == 0x00) {
-    if (!(p_saveto & 2) || !g_capacity_set) return 0x8d06; /* nowhere to put the photo */
+    if (getenv("FAKE_GONE")) return 0xc1;
+    if ((p_saveto & 2) && !g_capacity_set) return 0x8d06; /* the computer never said it has room */
     shoot();
     const char *after = getenv("FAKE_BUTTON_SHOT_AFTER_MS");
     if (after && g_shots == 1) g_button_due = now_s() + atoi(after) / 1000.0;
@@ -260,6 +295,7 @@ EdsError EdsSetObjectEventHandler(void *cam, uint32_t ev, ObjectHandler h, void 
 EdsError EdsSetPropertyEventHandler(void *cam, uint32_t ev, PropertyHandler h, void *ctx) { g_prop = h; return 0; }
 EdsError EdsSetCameraStateEventHandler(void *cam, uint32_t ev, StateHandler h, void *ctx) { g_state = h; return 0; }
 
+#ifndef NO_GETEVENT
 EdsError EdsGetEvent(void) {
   if (g_button_due && now_s() >= g_button_due) {
     g_button_due = 0;
@@ -268,13 +304,24 @@ EdsError EdsGetEvent(void) {
   for (int i = 0; i < g_pending_prop_count; i++)
     if (g_prop) g_prop(0x101, g_pending_props[i], 0, NULL);
   g_pending_prop_count = 0;
+  /* Hand over what is due; keep the rest for a later call. Handlers may queue more meanwhile. */
+  void *ready[32];
+  int n = 0, kept = 0;
+  double now = now_s();
   for (int i = 0; i < g_pending_count; i++) {
-    g_transfers++;
-    if (g_obj) g_obj(0x208, g_pending_items[i], NULL);
+    Ref *item = g_pending_items[i];
+    if (item->due > now) g_pending_items[kept++] = item;
+    else ready[n++] = item;
   }
-  g_pending_count = 0;
+  g_pending_count = kept;
+  for (int i = 0; i < n; i++) {
+    Ref *item = ready[i];
+    if (item->event == 0x208) g_transfers++;
+    if (g_obj) g_obj(item->event, item, NULL);
+  }
   return 0;
 }
+#endif
 
 EdsError EdsGetDirectoryItemInfo(void *ref, EdsDirectoryItemInfo *info) {
   Ref *item = ref;
