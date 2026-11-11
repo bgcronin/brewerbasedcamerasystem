@@ -3003,7 +3003,7 @@ button.cam-preset:hover {
   right: 0;
   top: calc(100% + 6px);
   z-index: 30;
-  max-height: 268px;
+  max-height: 290px;
   margin: 0;
   padding: 5px;
   overflow-y: auto;

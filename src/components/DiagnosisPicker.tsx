@@ -73,7 +73,7 @@ export function DiagnosisPicker({
     const panel = field.current.closest('.insp-scroll, .viewer-info')?.getBoundingClientRect();
     const below = (panel?.bottom ?? window.innerHeight) - r.bottom;
     const above = r.top - (panel?.top ?? 0);
-    setUp(below < 280 && above > below);
+    setUp(below < 300 && above > below);
   }, [open]);
   useEffect(() => {
     list.current?.querySelector('.is-hi')?.scrollIntoView({ block: 'nearest' });
