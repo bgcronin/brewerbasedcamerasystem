@@ -1,0 +1,4 @@
+# The launchers must keep their exact line endings on every computer and in every download:
+# Windows needs CRLF in the .bat, the Mac needs LF in the .command.
+*.bat -text
+*.command -text

@@ -43,3 +43,5 @@ done
 rm -rf "$OUT"
 echo "── local server"
 node --test test/server.test.mjs
+echo "── building Lumen for the launchers"
+node --test test/build-lumen.test.mjs
