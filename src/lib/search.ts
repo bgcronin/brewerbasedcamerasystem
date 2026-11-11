@@ -26,9 +26,13 @@ function haystack(c: Capture, patient: Patient | undefined): string {
   const cached = hayCache.get(c);
   if (cached && cached.patient === patient) return cached.hay;
   const d = fromISODate(c.date);
+  // "O'Sullivan" is found by "osullivan", "o'sullivan" and plain "sullivan".
+  const apart = (s: string | undefined) => s?.replace(/['’`]/g, ' ');
   const parts = [
     patient?.lastName,
     patient?.firstName,
+    apart(patient?.lastName),
+    apart(patient?.firstName),
     patient?.mrn,
     patient?.mrn?.replace(/\s+/g, ''),
     ...(c.diagnoses ?? []).map(diagnosisSearchText),

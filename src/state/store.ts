@@ -479,7 +479,10 @@ export async function ingest(input: IngestInput, patientOverride?: Patient): Pro
       try {
         const owner = await pinArchiveFolder(patient);
         const path = await archiveCapture(archiveHandle, owner, visit, capture, full);
-        await patchCapture(capture.id, { archivedPath: path });
+        const stored = await patchCapture(capture.id, { archivedPath: path });
+        // A label, note or star added while the file was being written belongs in visit.json too.
+        const meta = (x: Capture) => JSON.stringify([x.diagnoses ?? [], x.note ?? '', !!x.starred]);
+        if (stored && meta(stored) !== meta(capture)) await updateArchivedMetadata(archiveHandle, owner, visit, stored);
       } catch (e) {
         set((st) => ({ archive: { ...st.archive, status: 'error' } }));
         toast({ tone: 'error', message: 'Couldn’t write to the archive folder', detail: `Saved safely in Lumen. ${(e as Error).message}` });
@@ -563,7 +566,8 @@ export async function updateCapture(id: string, patch: Partial<Pick<Capture, 'ey
   const c = findCapture(id) ?? (await db.getCapture(id));
   if (!c) return;
   const [patient, visit] = await Promise.all([db.getPatient(c.patientId), db.getVisit(c.visitId)]);
-  const relabelled = (patch.eye && patch.eye !== c.eye) || (patch.technique !== undefined && patch.technique !== c.technique);
+  // `'technique' in patch` so that clearing the technique also renames the file.
+  const relabelled = (patch.eye && patch.eye !== c.eye) || ('technique' in patch && patch.technique !== c.technique);
   const merged = { ...c, ...patch };
   // The eye and technique are part of the file name, so a relabel renames the file too.
   const fileName = relabelled && patient ? captureFileName(patient, { takenAt: merged.takenAt, eye: merged.eye, technique: merged.technique }, merged.mime) : merged.fileName;
@@ -608,48 +612,75 @@ async function rememberDiagnoses(names: string[]): Promise<void> {
   await updateSettings({ recentDiagnoses: next });
 }
 
+// Label changes are applied strictly one after another, each reading the photos as the
+// previous change left them. Two labels added in quick succession can never overwrite each other.
+let labelWork: Promise<unknown> = Promise.resolve();
+function inOrder<T>(job: () => Promise<T>): Promise<T> {
+  const run = labelWork.then(job, job);
+  labelWork = run.catch(() => undefined);
+  return run;
+}
+
+/** Change a photo's labels on screen straight away; the stored record follows. */
+function showDiagnoses(id: string, diagnoses: string[] | undefined): void {
+  const swap = (x: Capture) => (x.id === id ? { ...x, diagnoses } : x);
+  set((st) => ({ captures: st.captures.map(swap), library: st.library ? st.library.map(swap) : st.library }));
+}
+
 /**
  * Label the active patient's visit. The labels go on every photo taken today
  * (those already taken and those still to come).
  */
-export async function setVisitDiagnoses(next: string[]): Promise<void> {
+export function setVisitDiagnoses(next: string[]): Promise<void> {
   const s = get();
   const prev = s.diagnoses;
+  const patientId = s.activePatientId;
   const added = next.filter((d) => !hasDiagnosis(prev, d));
   const removed = prev.filter((d) => !hasDiagnosis(next, d));
   set({ diagnoses: next });
   void rememberDiagnoses(added);
+  if (!patientId || (!added.length && !removed.length)) return Promise.resolve();
   const today = todayISO();
-  for (const c of s.captures.filter((x) => x.patientId === s.activePatientId && x.date === today)) {
-    let list = c.diagnoses ?? [];
-    for (const d of added) list = addDiagnosis(list, d);
-    for (const d of removed) list = removeDiagnosis(list, d);
-    if (!sameDiagnosisList(list, c.diagnoses)) await updateCapture(c.id, { diagnoses: list.length ? list : undefined });
-  }
+  return inOrder(async () => {
+    // Read from storage, not the screen: the user may already be on the next patient.
+    const todays = (await db.capturesForPatient(patientId)).filter((c) => c.date === today && !pendingDeletes.has(c.id));
+    for (const c of todays) {
+      let list = c.diagnoses ?? [];
+      for (const d of added) list = addDiagnosis(list, d);
+      for (const d of removed) list = removeDiagnosis(list, d);
+      if (!sameDiagnosisList(list, c.diagnoses)) await updateCapture(c.id, { diagnoses: list.length ? list : undefined });
+    }
+  });
 }
 
 /** Label one photo (from the viewer). */
-export async function setCaptureDiagnoses(id: string, next: string[]): Promise<void> {
+export function setCaptureDiagnoses(id: string, next: string[]): Promise<void> {
   const c = findCapture(id);
-  if (!c) return;
+  if (!c) return Promise.resolve();
+  const diagnoses = next.length ? next : undefined;
   void rememberDiagnoses(next.filter((d) => !hasDiagnosis(c.diagnoses, d)));
-  await updateCapture(id, { diagnoses: next.length ? next : undefined });
-  followTodaysLabels(c.patientId);
+  showDiagnoses(id, diagnoses);
+  return inOrder(async () => {
+    await updateCapture(id, { diagnoses });
+    followTodaysLabels(c.patientId);
+  });
 }
 
 /** Give every photo of the same visit this photo's diagnoses. Returns how many were changed. */
-export async function applyDiagnosesToVisit(id: string): Promise<number> {
-  const c = findCapture(id) ?? (await db.getCapture(id));
-  if (!c) return 0;
-  const siblings = (await db.capturesForPatient(c.patientId)).filter((x) => x.visitId === c.visitId && x.id !== id && !pendingDeletes.has(x.id));
-  let changed = 0;
-  for (const x of siblings) {
-    if (sameDiagnosisList(x.diagnoses, c.diagnoses)) continue;
-    await updateCapture(x.id, { diagnoses: c.diagnoses?.length ? [...c.diagnoses] : undefined });
-    changed++;
-  }
-  followTodaysLabels(c.patientId);
-  return changed;
+export function applyDiagnosesToVisit(id: string): Promise<number> {
+  return inOrder(async () => {
+    const c = (await db.getCapture(id)) ?? findCapture(id);
+    if (!c) return 0;
+    const siblings = (await db.capturesForPatient(c.patientId)).filter((x) => x.visitId === c.visitId && x.id !== id && !pendingDeletes.has(x.id));
+    let changed = 0;
+    for (const x of siblings) {
+      if (sameDiagnosisList(x.diagnoses, c.diagnoses)) continue;
+      await updateCapture(x.id, { diagnoses: c.diagnoses?.length ? [...c.diagnoses] : undefined });
+      changed++;
+    }
+    followTodaysLabels(c.patientId);
+    return changed;
+  });
 }
 
 /** After labels are edited in the viewer, new photos of the active patient follow what today's photos now say. */

@@ -2714,6 +2714,24 @@ button.cam-preset:hover {
     height: 44px;
   }
 }
+@media (max-height: 740px) {
+  .inspector {
+    padding-top: 12px;
+  }
+  .eye-opt {
+    height: 42px;
+  }
+  .eye-opt-code {
+    font-size: 15px;
+  }
+  .tech {
+    height: 28px;
+  }
+  .shutter {
+    width: 64px;
+    height: 64px;
+  }
+}
 @media (max-width: 960px) {
   .app,
   .app[data-view='review'] {
