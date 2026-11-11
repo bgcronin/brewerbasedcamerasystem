@@ -233,6 +233,7 @@ export function createServer({ backend, port = 47800, host = '127.0.0.1', distDi
     len.writeUInt32BE(header.length, 0);
     const target = active?.readyState === active?.OPEN ? active : [...clients].find((c) => c.readyState === c.OPEN);
     if (target) {
+      log(`sent ${photo.name} to Lumen`);
       target.send(Buffer.concat([Buffer.from([2]), len, header, photo.data]), { binary: true });
       return;
     }

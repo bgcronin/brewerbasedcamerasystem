@@ -622,6 +622,7 @@ export class EdsdkBackend extends EventEmitter {
         clearTimeout(this.rawTimer);
         this.rawTimer = null;
       }
+      this.log(`photo ${name} (${Math.round(data.length / 1024)} KB) ${pending ? 'for Lumen’s shutter' : 'from the camera’s own shutter button'}`);
       this.emit('photo', {
         requestId: pending?.requestId,
         name,
