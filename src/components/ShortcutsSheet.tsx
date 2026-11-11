@@ -11,6 +11,7 @@ const GROUPS: { title: string; keys: [string[], string][] }[] = [
       [['B'], 'Both eyes (OU)'],
       [['1', '–', '8'], 'Illumination technique'],
       [['0'], 'Clear technique'],
+      [['D'], 'Diagnosis for today’s photos'],
       [['G'], 'Centring reticle'],
       [['F'], 'Full-screen live view'],
     ],
@@ -19,7 +20,8 @@ const GROUPS: { title: string; keys: [string[], string][] }[] = [
     title: 'Navigate',
     keys: [
       [['↑', '↓'], 'Previous / next patient'],
-      [['/'], 'Search patients'],
+      [['/'], 'Find a patient on the list'],
+      [['Ctrl', 'K'], 'Search every photograph'],
       [['V'], 'Switch Capture / Review'],
       [['?'], 'This list'],
     ],
@@ -29,6 +31,8 @@ const GROUPS: { title: string; keys: [string[], string][] }[] = [
     keys: [
       [['←', '→'], 'Previous / next photo'],
       [['S'], 'Star'],
+      [['A'], 'Annotate: circle, arrow, pen, text'],
+      [['M'], 'Show / hide marks'],
       [['I'], 'Details'],
       [['Del'], 'Delete (with undo)'],
       [['Scroll'], 'Zoom; double-click for 1:1'],

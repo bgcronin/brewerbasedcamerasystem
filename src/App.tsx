@@ -5,6 +5,7 @@ import { CompareView } from './components/CompareView';
 import { Icon } from './components/Icon';
 import { ImportSheet } from './components/ImportSheet';
 import { Inspector } from './components/Inspector';
+import { LibraryView } from './components/LibraryView';
 import { Lightbox } from './components/Lightbox';
 import { PatientSheet } from './components/PatientSheet';
 import { ReviewView } from './components/ReviewView';
@@ -77,8 +78,8 @@ export function App() {
   return (
     <div className="app" data-view={view} data-ready={ready || undefined}>
       <TopBar />
-      <Worklist />
-      <main className="main">{view === 'capture' ? <CaptureView /> : <ReviewView />}</main>
+      {view !== 'library' && <Worklist />}
+      <main className="main">{view === 'capture' ? <CaptureView /> : view === 'review' ? <ReviewView /> : <LibraryView />}</main>
       {view === 'capture' && <Inspector />}
 
       <Lightbox />
@@ -106,7 +107,7 @@ export function App() {
           <div className="drop-card">
             <Icon name="import" size={28} />
             <strong>Drop to import</strong>
-            <span>A CSV list adds patients · photos go to the selected patient</span>
+            <span>A clinic list adds patients. Photos go to the selected patient.</span>
           </div>
         </div>
       )}

@@ -1,6 +1,8 @@
 import { create } from 'zustand';
-import { archiveCapture, removeArchived, renameArchived, updateArchivedMetadata } from '../lib/archive';
+import { renderAnnotated } from '../lib/annotations';
+import { archiveCapture, removeArchived, renameArchived, syncAnnotatedCopy, updateArchivedMetadata } from '../lib/archive';
 import * as db from '../lib/db';
+import { addDiagnosis, hasDiagnosis, removeDiagnosis, sameDiagnosis } from '../lib/diagnoses';
 import { todayISO, toISODate } from '../lib/dates';
 import { encodeBitmap, warmEncoder } from '../lib/encode';
 import { fsSupported, hasPermission, pickDirectory, requestPermission } from '../lib/fsaccess';
@@ -13,6 +15,7 @@ import { FolderWatcher } from '../lib/tether';
 import { forgetThumb, primeThumb } from '../lib/thumbs';
 import {
   DEFAULT_SETTINGS,
+  type Annotation,
   type Capture,
   type CaptureSource,
   type Eye,
@@ -28,7 +31,7 @@ export interface VisitRow {
   count: number;
 }
 
-export type View = 'capture' | 'review';
+export type View = 'capture' | 'review' | 'library';
 
 export interface Toast {
   id: string;
@@ -72,8 +75,12 @@ interface AppState {
   patient: Patient | null;
   patientVisits: Visit[];
   captures: Capture[];
+  /** Every photo in Lumen (metadata only), loaded when the Library is first opened. */
+  library: Capture[] | null;
   eye: Eye;
   technique: string | null;
+  /** Diagnosis labels for the active patient's photos today; new photos are filed with them. */
+  diagnoses: string[];
   view: View;
   processing: number;
   flashTick: number;
@@ -85,7 +92,8 @@ interface AppState {
   visiblePatientIds: string[] | null;
   toasts: Toast[];
   sheet: Sheet;
-  lightbox: { ids: string[]; index: number } | null;
+  /** `source` says which list the ids come from: the active patient's photos, or the whole library. */
+  lightbox: { ids: string[]; index: number; source: 'patient' | 'library' } | null;
   compare: [string, string] | null;
 }
 
@@ -99,8 +107,10 @@ const initial: AppState = {
   patient: null,
   patientVisits: [],
   captures: [],
+  library: null,
   eye: 'OD',
   technique: null,
+  diagnoses: [],
   view: 'capture',
   processing: 0,
   flashTick: 0,
@@ -178,6 +188,8 @@ export async function init(): Promise<void> {
   }
 
   await Promise.all([loadRows(), refreshPending(), refreshAllPatients()]);
+  // Finish anything a previous session left unwritten (photos, or marks drawn just before closing).
+  if (get().archive.status === 'connected' && get().archive.pending > 0) void syncArchive(true);
   const lastPatient = await db.kvGet<{ id: string; date: string }>('lastPatient');
   if (lastPatient && lastPatient.date === todayISO()) await selectPatient(lastPatient.id);
   set({ ready: true });
@@ -249,7 +261,7 @@ export async function setDate(date: string): Promise<void> {
 
 export async function selectPatient(id: string | null): Promise<void> {
   if (!id) {
-    set({ activePatientId: null, patient: null, captures: [], patientVisits: [], lastCaptureId: null });
+    set({ activePatientId: null, patient: null, captures: [], patientVisits: [], lastCaptureId: null, diagnoses: [] });
     return;
   }
   // Switch synchronously, so a shutter press straight after choosing a patient can
@@ -258,7 +270,7 @@ export async function selectPatient(id: string | null): Promise<void> {
   const switching = s.activePatientId !== id;
   const known = s.rows.find((r) => r.patient.id === id)?.patient ?? s.allPatients.find((p) => p.id === id) ?? null;
   if (switching) {
-    set({ activePatientId: id, patient: known, captures: [], patientVisits: [], eye: 'OD', lastCaptureId: null });
+    set({ activePatientId: id, patient: known, captures: [], patientVisits: [], eye: 'OD', lastCaptureId: null, diagnoses: [] });
   }
   const [patient, captures, visits] = await Promise.all([db.getPatient(id), db.capturesForPatient(id), db.visitsForPatient(id)]);
   if (get().activePatientId !== id) return; // the user has already moved on
@@ -270,10 +282,13 @@ export async function selectPatient(id: string | null): Promise<void> {
     // Keep anything captured while the history was loading.
     const loaded = new Set(captures.map((c) => c.id));
     const extra = st.captures.filter((c) => c.patientId === id && !loaded.has(c.id));
+    const all = [...captures.filter((c) => !pendingDeletes.has(c.id)), ...extra].sort((a, b) => a.takenAt - b.takenAt);
     return {
       patient,
-      captures: [...captures.filter((c) => !pendingDeletes.has(c.id)), ...extra].sort((a, b) => a.takenAt - b.takenAt),
+      captures: all,
       patientVisits: visits,
+      // Carry on with whatever today's photos are already labelled, plus anything typed while loading.
+      diagnoses: switching ? unionDiagnoses(todaysDiagnoses(all), st.diagnoses) : st.diagnoses,
     };
   });
   void db.kvSet('lastPatient', { id, date: todayISO() });
@@ -372,6 +387,7 @@ export function setTechnique(technique: string | null): void {
 
 export function setView(view: View): void {
   set({ view });
+  if (view === 'library') void loadLibrary();
 }
 
 function isIdentity(t: Transform) {
@@ -388,6 +404,7 @@ interface IngestInput {
   /** Labels captured at the moment the shutter was pressed (default: current selection). */
   eye?: Eye;
   technique?: string | null;
+  diagnoses?: string[];
   exposure?: Capture['exposure'];
 }
 
@@ -399,6 +416,7 @@ export async function ingest(input: IngestInput, patientOverride?: Patient): Pro
   const { settings } = s;
   const eye = input.eye ?? s.eye;
   const technique = input.technique !== undefined ? input.technique : s.technique;
+  const diagnosesAtPress = input.diagnoses ?? (patient.id === s.activePatientId ? s.diagnoses : []);
   const takenAt = input.takenAt ?? Date.now();
   set((st) => ({ processing: st.processing + 1 }));
   try {
@@ -421,6 +439,9 @@ export async function ingest(input: IngestInput, patientOverride?: Patient): Pro
       ({ thumb, width, height } = r);
     }
     const mime = full.type || 'image/jpeg';
+    // A label added while the photo was being processed still belongs on it.
+    const now = get();
+    const diagnoses = input.diagnoses ?? (patient.id === now.activePatientId ? now.diagnoses : diagnosesAtPress);
     const capture: Capture = {
       id: uid(),
       patientId: patient.id,
@@ -437,19 +458,21 @@ export async function ingest(input: IngestInput, patientOverride?: Patient): Pro
       source: input.source,
       deviceLabel: input.deviceLabel,
       exposure: input.exposure,
+      diagnoses: diagnoses.length ? diagnoses : undefined,
     };
     await db.addCapture(capture, { id: capture.id, full, thumb });
     primeThumb(capture.id, thumb);
 
-    set((st) =>
-      st.activePatientId === patient.id
+    set((st) => ({
+      library: st.library ? [...st.library, capture] : st.library,
+      ...(st.activePatientId === patient.id
         ? {
             captures: [...st.captures, capture],
             lastCaptureId: capture.id,
             patientVisits: st.patientVisits.some((v) => v.id === visit.id) ? st.patientVisits : [visit, ...st.patientVisits],
           }
-        : {},
-    );
+        : {}),
+    }));
     void loadRows();
 
     if (archiveHandle && get().archive.status === 'connected') {
@@ -477,8 +500,19 @@ export async function ingest(input: IngestInput, patientOverride?: Patient): Pro
 /** Merge a partial change into the stored record and the visible list (never overwrites a newer edit). */
 async function patchCapture(id: string, patch: Partial<Capture>): Promise<Capture | undefined> {
   const next = await db.patchCapture(id, patch);
-  if (next) set((st) => ({ captures: st.captures.map((x) => (x.id === id ? next : x)) }));
+  if (next) {
+    set((st) => ({
+      captures: st.captures.map((x) => (x.id === id ? next : x)),
+      library: st.library ? st.library.map((x) => (x.id === id ? next : x)) : st.library,
+    }));
+  }
   return next;
+}
+
+/** A photo by id, wherever it is currently shown. */
+function findCapture(id: string): Capture | undefined {
+  const s = get();
+  return s.captures.find((x) => x.id === id) ?? s.library?.find((x) => x.id === id);
 }
 
 /** The archive folder is chosen once per patient and then kept, whatever later corrections say. */
@@ -525,8 +559,8 @@ export async function importFiles(files: File[]): Promise<void> {
   if (images.length < files.length) toast({ tone: 'warning', message: 'Some files were skipped', detail: 'Only JPEG, PNG and WebP images can be imported.' });
 }
 
-export async function updateCapture(id: string, patch: Partial<Pick<Capture, 'eye' | 'technique' | 'note' | 'starred'>>): Promise<void> {
-  const c = get().captures.find((x) => x.id === id) ?? (await db.getCapture(id));
+export async function updateCapture(id: string, patch: Partial<Pick<Capture, 'eye' | 'technique' | 'note' | 'starred' | 'diagnoses'>>): Promise<void> {
+  const c = findCapture(id) ?? (await db.getCapture(id));
   if (!c) return;
   const [patient, visit] = await Promise.all([db.getPatient(c.patientId), db.getVisit(c.visitId)]);
   const relabelled = (patch.eye && patch.eye !== c.eye) || (patch.technique !== undefined && patch.technique !== c.technique);
@@ -537,8 +571,8 @@ export async function updateCapture(id: string, patch: Partial<Pick<Capture, 'ey
   if (!archiveHandle || !next.archivedPath || get().archive.status !== 'connected' || !patient || !visit) return;
   try {
     if (relabelled) {
-      const archivedPath = await renameArchived(archiveHandle, patient, visit, next, fileName);
-      if (archivedPath) await patchCapture(id, { archivedPath });
+      const renamed = await renameArchived(archiveHandle, patient, visit, next, fileName);
+      if (renamed) await patchCapture(id, renamed);
     } else {
       await updateArchivedMetadata(archiveHandle, patient, visit, next);
     }
@@ -547,12 +581,136 @@ export async function updateCapture(id: string, patch: Partial<Pick<Capture, 'ey
   }
 }
 
+/* ───────────────────────── diagnosis labels ───────────────────────── */
+
+function unionDiagnoses(...lists: (string[] | undefined)[]): string[] {
+  let out: string[] = [];
+  for (const l of lists) for (const d of l ?? []) out = addDiagnosis(out, d);
+  return out;
+}
+
+function todaysDiagnoses(captures: Capture[]): string[] {
+  const today = todayISO();
+  return unionDiagnoses(...captures.filter((c) => c.date === today).map((c) => c.diagnoses));
+}
+
+function sameDiagnosisList(a: string[] | undefined, b: string[] | undefined): boolean {
+  const x = a ?? [];
+  const y = b ?? [];
+  return x.length === y.length && x.every((d, i) => sameDiagnosis(d, y[i]));
+}
+
+/** Keep the most recently used diagnoses at the top of the suggestions. */
+async function rememberDiagnoses(names: string[]): Promise<void> {
+  if (!names.length) return;
+  const old = get().settings.recentDiagnoses ?? [];
+  const next = [...names, ...old.filter((d) => !hasDiagnosis(names, d))].slice(0, 40);
+  await updateSettings({ recentDiagnoses: next });
+}
+
+/**
+ * Label the active patient's visit. The labels go on every photo taken today
+ * (those already taken and those still to come).
+ */
+export async function setVisitDiagnoses(next: string[]): Promise<void> {
+  const s = get();
+  const prev = s.diagnoses;
+  const added = next.filter((d) => !hasDiagnosis(prev, d));
+  const removed = prev.filter((d) => !hasDiagnosis(next, d));
+  set({ diagnoses: next });
+  void rememberDiagnoses(added);
+  const today = todayISO();
+  for (const c of s.captures.filter((x) => x.patientId === s.activePatientId && x.date === today)) {
+    let list = c.diagnoses ?? [];
+    for (const d of added) list = addDiagnosis(list, d);
+    for (const d of removed) list = removeDiagnosis(list, d);
+    if (!sameDiagnosisList(list, c.diagnoses)) await updateCapture(c.id, { diagnoses: list.length ? list : undefined });
+  }
+}
+
+/** Label one photo (from the viewer). */
+export async function setCaptureDiagnoses(id: string, next: string[]): Promise<void> {
+  const c = findCapture(id);
+  if (!c) return;
+  void rememberDiagnoses(next.filter((d) => !hasDiagnosis(c.diagnoses, d)));
+  await updateCapture(id, { diagnoses: next.length ? next : undefined });
+  followTodaysLabels(c.patientId);
+}
+
+/** Give every photo of the same visit this photo's diagnoses. Returns how many were changed. */
+export async function applyDiagnosesToVisit(id: string): Promise<number> {
+  const c = findCapture(id) ?? (await db.getCapture(id));
+  if (!c) return 0;
+  const siblings = (await db.capturesForPatient(c.patientId)).filter((x) => x.visitId === c.visitId && x.id !== id && !pendingDeletes.has(x.id));
+  let changed = 0;
+  for (const x of siblings) {
+    if (sameDiagnosisList(x.diagnoses, c.diagnoses)) continue;
+    await updateCapture(x.id, { diagnoses: c.diagnoses?.length ? [...c.diagnoses] : undefined });
+    changed++;
+  }
+  followTodaysLabels(c.patientId);
+  return changed;
+}
+
+/** After labels are edited in the viewer, new photos of the active patient follow what today's photos now say. */
+function followTodaysLabels(patientId: string): void {
+  const s = get();
+  if (s.activePatientId !== patientId) return;
+  const today = todayISO();
+  if (!s.captures.some((c) => c.date === today)) return;
+  set({ diagnoses: todaysDiagnoses(s.captures) });
+}
+
+/* ───────────────────────── annotations ───────────────────────── */
+
+const annotationTimers = new Map<string, number>();
+
+/**
+ * Save the marks drawn on a photo. The photo itself is never changed; shortly
+ * afterwards an "_annotated" copy is written beside it in the archive folder.
+ */
+export async function setAnnotations(id: string, annotations: Annotation[]): Promise<void> {
+  await patchCapture(id, { annotations: annotations.length ? annotations : undefined, annotationsAt: Date.now() });
+  window.clearTimeout(annotationTimers.get(id));
+  annotationTimers.set(
+    id,
+    window.setTimeout(() => {
+      annotationTimers.delete(id);
+      void writeAnnotatedCopy(id)
+        .catch(() => undefined) // left pending; the next archive sync retries
+        .then(() => refreshPending());
+    }, 1500),
+  );
+  void refreshPending();
+}
+
+async function writeAnnotatedCopy(id: string): Promise<boolean> {
+  if (!archiveHandle || get().archive.status !== 'connected') return false;
+  const c = await db.getCapture(id);
+  if (!c || !db.annotatedCopyStale(c) || pendingDeletes.has(id)) return false;
+  const [patient, visit, img] = await Promise.all([db.getPatient(c.patientId), db.getVisit(c.visitId), db.getImage(id)]);
+  if (!patient || !visit || !img) return false;
+  const blob = c.annotations?.length ? await renderAnnotated(img.full, c.annotations, c.mime, get().settings.quality) : null;
+  const annotatedPath = await syncAnnotatedCopy(archiveHandle, patient, visit, c, blob);
+  await patchCapture(id, { annotatedPath, annotatedAt: c.annotationsAt });
+  return true;
+}
+
+/* ───────────────────────── library ───────────────────────── */
+
+export async function loadLibrary(): Promise<void> {
+  const all = (await db.allCaptures()).filter((c) => !pendingDeletes.has(c.id));
+  set({ library: all });
+  void refreshAllPatients();
+}
+
 /** Delete with a short undo window, Apple-style. */
 export function deleteCapture(id: string): void {
-  const c = get().captures.find((x) => x.id === id);
+  const c = findCapture(id);
   if (!c) return;
   set((st) => ({
     captures: st.captures.filter((x) => x.id !== id),
+    library: st.library ? st.library.filter((x) => x.id !== id) : st.library,
     lastCaptureId: st.lastCaptureId === id ? null : st.lastCaptureId,
     rows: st.rows.map((r) => (r.visit.id === c.visitId ? { ...r, count: Math.max(0, r.count - 1) } : r)),
   }));
@@ -565,11 +723,12 @@ export function deleteCapture(id: string): void {
       run: () => {
         window.clearTimeout(timer);
         pendingDeletes.delete(id);
-        set((st) =>
-          st.activePatientId === c.patientId
+        set((st) => ({
+          library: st.library && !st.library.some((x) => x.id === c.id) ? [...st.library, c] : st.library,
+          ...(st.activePatientId === c.patientId && !st.captures.some((x) => x.id === c.id)
             ? { captures: [...st.captures, c].sort((a, b) => a.takenAt - b.takenAt) }
-            : {},
-        );
+            : {}),
+        }));
         void loadRows();
       },
     },
@@ -624,7 +783,8 @@ if (typeof window !== 'undefined') window.addEventListener('pagehide', flushPend
 /* ───────────────────────── archive folder ───────────────────────── */
 
 async function refreshPending(): Promise<void> {
-  const pending = (await db.unarchivedCaptures()).filter((c) => !pendingDeletes.has(c.id)).length;
+  const all = await db.allCaptures();
+  const pending = all.filter((c) => !pendingDeletes.has(c.id) && (!c.archivedPath || db.annotatedCopyStale(c))).length;
   set((s) => ({ archive: { ...s.archive, pending } }));
 }
 
@@ -655,8 +815,8 @@ export async function disconnectArchive(): Promise<void> {
   set((s) => ({ archive: { ...s.archive, status: fsSupported ? 'none' : 'unsupported', name: undefined } }));
 }
 
-/** Write anything that was captured while the archive folder was unavailable. */
-export async function syncArchive(): Promise<void> {
+/** Write anything that was captured (or marked up) while the archive folder was unavailable. */
+export async function syncArchive(quiet = false): Promise<void> {
   if (!archiveHandle) return;
   const pending = (await db.unarchivedCaptures()).filter((c) => !pendingDeletes.has(c.id));
   let done = 0;
@@ -674,7 +834,16 @@ export async function syncArchive(): Promise<void> {
       break;
     }
   }
-  if (done) toast({ tone: 'success', message: `${done} photo${done === 1 ? '' : 's'} written to the archive` });
+  if (done && !quiet) toast({ tone: 'success', message: `${done} photo${done === 1 ? '' : 's'} written to the archive` });
+  if (get().archive.status === 'connected') {
+    for (const c of (await db.allCaptures()).filter((x) => db.annotatedCopyStale(x) && !annotationTimers.has(x.id))) {
+      try {
+        await writeAnnotatedCopy(c.id);
+      } catch {
+        break; // the folder has gone away again; try next time
+      }
+    }
+  }
   await processArchiveRemovals();
   await refreshPending();
 }
@@ -789,8 +958,8 @@ export function closeSheet(): void {
   set({ sheet: null });
 }
 
-export function openLightbox(ids: string[], index: number): void {
-  set({ lightbox: { ids, index } });
+export function openLightbox(ids: string[], index: number, source: 'patient' | 'library' = 'patient'): void {
+  set({ lightbox: { ids, index, source } });
 }
 
 export function closeLightbox(): void {

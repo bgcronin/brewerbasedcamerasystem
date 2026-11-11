@@ -43,6 +43,16 @@ export interface CameraValues {
   wb?: string;
 }
 
+/**
+ * A mark drawn on a photo. Coordinates are fractions of the image's width and
+ * height (0–1), so marks stay put whatever size the photo is shown or exported at.
+ */
+export type Annotation =
+  | { id: string; kind: 'ellipse'; color: string; cx: number; cy: number; rx: number; ry: number }
+  | { id: string; kind: 'arrow'; color: string; x1: number; y1: number; x2: number; y2: number }
+  | { id: string; kind: 'pen'; color: string; points: number[] }
+  | { id: string; kind: 'text'; color: string; x: number; y: number; text: string };
+
 export interface Capture {
   id: string;
   patientId: string;
@@ -65,6 +75,15 @@ export interface Capture {
   archivedPath?: string;
   /** Settings the camera used, when it reports them (Canon direct). */
   exposure?: CameraValues & { mode?: string };
+  /** Diagnosis labels, e.g. ["Keratoconus"]. Searchable in the Library. */
+  diagnoses?: string[];
+  /** Marks drawn over the photo. The stored image itself is never altered. */
+  annotations?: Annotation[];
+  /** When the annotations last changed. */
+  annotationsAt?: number;
+  /** Archive path of the flattened "_annotated" copy, and the annotationsAt it reflects. */
+  annotatedPath?: string;
+  annotatedAt?: number;
 }
 
 export interface StoredImage {
@@ -104,6 +123,8 @@ export interface Settings {
   cameraPresets: Record<string, CameraValues>;
   /** Where Lumen Camera Link listens; empty = automatic. */
   cameraLinkUrl: string;
+  /** Diagnoses used most recently, newest first (includes ones typed by hand). */
+  recentDiagnoses: string[];
   deviceId?: string;
   /** Per-device orientation fixes, keyed by device label. */
   transforms: Record<string, Transform>;
@@ -127,6 +148,7 @@ export const DEFAULT_SETTINGS: Settings = {
   resolution: 'auto',
   cameraPresets: {},
   cameraLinkUrl: '',
+  recentDiagnoses: [],
 };
 
 export interface Technique {
@@ -146,6 +168,12 @@ export const TECHNIQUES: Technique[] = [
   { id: 'redfree', label: 'Red-free', short: 'Red-free' },
   { id: 'external', label: 'External / adnexa', short: 'External' },
 ];
+
+/** The short name, for tight spaces such as thumbnails. */
+export function techniqueShort(id?: string): string {
+  if (!id) return '';
+  return TECHNIQUES.find((t) => t.id === id)?.short ?? id;
+}
 
 export function techniqueLabel(id?: string): string {
   if (!id) return '';

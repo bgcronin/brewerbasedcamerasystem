@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react';
+import { annotatedName, renderAnnotated } from '../lib/annotations';
 import { ageFromDOB, formatClock, formatLongDate, formatShortDate } from '../lib/dates';
 import { getImage } from '../lib/db';
+import { addDiagnosis } from '../lib/diagnoses';
 import { displayName } from '../lib/names';
 import { patientFolderName, withSuffix } from '../lib/naming';
 import { techniqueLabel, type Capture, type Eye } from '../lib/types';
@@ -22,14 +24,17 @@ function Tile({ c, onOpen, selecting, selected, onToggle }: { c: Capture; onOpen
       <Thumb id={c.id} alt={`${c.eye} ${techniqueLabel(c.technique)}`} />
       <span className="tile-top">
         <EyeTag eye={c.eye} />
-        {c.starred && <Icon name="star" size={13} fill="currentColor" className="tile-star" />}
+        <span className="tile-badges">
+          {c.note && <span title={c.note} className="tile-badge"><Icon name="note" size={13} /></span>}
+          {c.annotations?.length ? <Icon name="annotate" size={13} className="tile-badge" /> : null}
+          {c.starred && <Icon name="star" size={13} fill="currentColor" className="tile-star" />}
+        </span>
       </span>
       <span className="tile-bottom">
         <span>{formatClock(c.takenAt)}</span>
         {c.technique && <span>{techniqueLabel(c.technique)}</span>}
       </span>
       {selecting && <span className="tile-check">{selected && <Icon name="check" size={14} strokeWidth={2.2} />}</span>}
-      {c.note && <span className="tile-note" title={c.note}><Icon name="note" size={12} /></span>}
     </button>
   );
 }
@@ -87,6 +92,11 @@ export function ReviewView() {
         used.add(`${c.date}/${name}`);
         fileOf.set(c.id, `${c.date}/${name}`);
         entries.push({ path: `${root}/${c.date}/${name}`, data: img.full, modified: new Date(c.takenAt) });
+        if (c.annotations?.length) {
+          // A second copy with the marks drawn in, beside the untouched original.
+          const marked = await renderAnnotated(img.full, c.annotations, c.mime);
+          entries.push({ path: `${root}/${c.date}/${annotatedName(name)}`, data: marked, modified: new Date(c.annotationsAt ?? c.takenAt) });
+        }
       }
       entries.push({
         path: `${root}/patient.json`,
@@ -102,6 +112,8 @@ export function ReviewView() {
               height: c.height,
               note: c.note,
               starred: c.starred || undefined,
+              diagnoses: c.diagnoses?.length ? c.diagnoses : undefined,
+              annotations: c.annotations?.length ? c.annotations : undefined,
             })),
           },
           null,
@@ -187,6 +199,8 @@ export function ReviewView() {
             const od = col('OD');
             const os = col('OS');
             const ou = col('OU');
+            let labels: string[] = [];
+            for (const c of list) for (const d of c.diagnoses ?? []) labels = addDiagnosis(labels, d);
             const tiles = (cs: Capture[]) =>
               cs.map((c) => (
                 <Tile
@@ -209,6 +223,15 @@ export function ReviewView() {
                     {v?.reason && <span>{v.reason}</span>}
                     {v?.clinician && <span>{v.clinician}</span>}
                   </span>
+                  {labels.length > 0 && (
+                    <span className="visit-dx">
+                      {labels.map((d) => (
+                        <span key={d} className="dx-chip">
+                          <span className="dx-chip-name">{d}</span>
+                        </span>
+                      ))}
+                    </span>
+                  )}
                 </h2>
                 <div className="eye-columns">
                   {(filter === 'all' || filter === 'OD' || filter === 'starred') && (

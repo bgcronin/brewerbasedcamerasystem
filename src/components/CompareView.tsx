@@ -5,14 +5,23 @@ import { displayName } from '../lib/names';
 import { useFullImage } from '../lib/thumbs';
 import { techniqueLabel, type Capture } from '../lib/types';
 import { closeCompare, useApp } from '../state/store';
+import { AnnotationLayer } from './AnnotationLayer';
 import { EyeTag, IconButton, Switch } from './ui';
 import { ZOOM_FIT, ZoomPane, type ZoomState } from './ZoomPane';
 
-function Pane({ c, view, onView }: { c: Capture; view: ZoomState; onView: (v: ZoomState) => void }) {
+function Pane({ c, view, onView, marks }: { c: Capture; view: ZoomState; onView: (v: ZoomState) => void; marks: boolean }) {
   const url = useFullImage(c.id);
   return (
     <div className="compare-pane">
-      <ZoomPane src={url} naturalWidth={c.width} naturalHeight={c.height} view={view} onView={onView} alt="" />
+      <ZoomPane
+        src={url}
+        naturalWidth={c.width}
+        naturalHeight={c.height}
+        view={view}
+        onView={onView}
+        alt=""
+        overlay={marks && c.annotations?.length ? <AnnotationLayer width={c.width} height={c.height} annotations={c.annotations} /> : null}
+      />
       <div className="compare-label glass">
         <EyeTag eye={c.eye} />
         <strong>{formatShortDate(c.date)}</strong>
@@ -29,8 +38,11 @@ function Pane({ c, view, onView }: { c: Capture; view: ZoomState; onView: (v: Zo
 export function CompareView() {
   const pair = useApp((s) => s.compare);
   const captures = useApp((s) => s.captures);
-  const patient = useApp((s) => s.patient);
+  const library = useApp((s) => s.library);
+  const allPatients = useApp((s) => s.allPatients);
+  const activePatient = useApp((s) => s.patient);
   const [sync, setSync] = useState(true);
+  const [marks, setMarks] = useState(true);
   const [a, setA] = useState<ZoomState>(ZOOM_FIT);
   const [b, setB] = useState<ZoomState>(ZOOM_FIT);
   const [swapped, setSwapped] = useState(false);
@@ -51,8 +63,12 @@ export function CompareView() {
   }, [pair]);
 
   if (!pair) return null;
-  let [left, right] = pair.map((id) => captures.find((c) => c.id === id));
+  // The pair may come from the patient on screen or, via the Library, from anyone.
+  let [left, right] = pair.map((id) => captures.find((c) => c.id === id) ?? library?.find((c) => c.id === id));
   if (!left || !right) return null;
+  const patientId = left.patientId;
+  const patient = allPatients.find((p) => p.id === patientId) ?? (activePatient?.id === patientId ? activePatient : null);
+  const anyMarks = !!(left.annotations?.length || right.annotations?.length);
   if (left.takenAt > right.takenAt) [left, right] = [right, left];
   if (swapped) [left, right] = [right, left];
 
@@ -70,6 +86,12 @@ export function CompareView() {
           </div>
         </div>
         <div className="viewer-actions">
+          {anyMarks && (
+            <label className="inline-switch">
+              <span>Marks</span>
+              <Switch checked={marks} onChange={setMarks} label="Show marks" />
+            </label>
+          )}
           <label className="inline-switch">
             <span>Link zoom</span>
             <Switch checked={sync} onChange={(v) => (setSync(v), v && setB(a))} label="Link zoom" />
@@ -78,8 +100,8 @@ export function CompareView() {
         </div>
       </header>
       <div className="compare-body">
-        <Pane c={left} view={a} onView={setLeft} />
-        <Pane c={right} view={b} onView={setRight} />
+        <Pane c={left} view={a} onView={setLeft} marks={marks} />
+        <Pane c={right} view={b} onView={setRight} marks={marks} />
       </div>
     </div>,
     document.body,

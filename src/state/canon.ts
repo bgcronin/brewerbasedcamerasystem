@@ -263,6 +263,7 @@ interface Snapshot {
   patient: Patient;
   eye: Eye;
   technique: string | null;
+  diagnoses: string[];
 }
 const captures = new Map<string, Snapshot>();
 /** Snapshots of captures that timed out, kept a while in case the photo still turns up. */
@@ -301,7 +302,18 @@ async function onPhoto(h: PhotoHeader, blob: Blob) {
   if (filed) {
     // Taken from Lumen: file it exactly as it was labelled at the moment of the shutter press.
     await ingest(
-      { original: file, source: 'canon', deviceLabel: label, transform: transformFor(label), takenAt: h.takenAt, eye: filed.eye, technique: filed.technique, exposure: h.exposure },
+      {
+        original: file,
+        source: 'canon',
+        deviceLabel: label,
+        transform: transformFor(label),
+        takenAt: h.takenAt,
+        eye: filed.eye,
+        technique: filed.technique,
+        // If the patient is still on screen, use their labels as they are now; otherwise as they were at the press.
+        diagnoses: useApp.getState().activePatientId === filed.patient.id ? undefined : filed.diagnoses,
+        exposure: h.exposure,
+      },
       filed.patient,
     );
     if (late) toast({ tone: 'success', message: 'The photo arrived after all', detail: `Filed to ${displayName(late.patient)}, ${late.eye}.`, duration: 7000 });
@@ -334,7 +346,7 @@ export async function canonShutter(): Promise<void> {
     return;
   }
   const id = `cap-${Date.now().toString(36)}-${nextId}`;
-  captures.set(id, { patient: s.patient, eye: s.eye, technique: s.technique });
+  captures.set(id, { patient: s.patient, eye: s.eye, technique: s.technique, diagnoses: s.diagnoses });
   useApp.setState((st) => ({ flashTick: st.flashTick + 1 }));
   if (s.settings.shutterSound) playShutter();
   try {

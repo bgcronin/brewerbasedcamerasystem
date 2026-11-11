@@ -10,8 +10,9 @@
  *         visit.json        ← demographics + per-image metadata
  */
 import { fileExists, getDirPath, isNotFound, readTextFile, renameFile, writeFile } from './fsaccess';
+import { annotatedName } from './annotations';
 import { patientFolderName, withSuffix } from './naming';
-import { techniqueLabel, type Capture, type Patient, type Visit } from './types';
+import { techniqueLabel, type Annotation, type Capture, type Patient, type Visit } from './types';
 
 const MANIFEST = 'visit.json';
 
@@ -29,6 +30,11 @@ interface ManifestImage {
   note?: string;
   starred?: boolean;
   exposure?: Capture['exposure'];
+  diagnoses?: string[];
+  /** Marks drawn on the photo, as fractions of its width and height. */
+  annotations?: Annotation[];
+  /** A copy of the photo with the marks drawn in, beside the original. */
+  annotatedFile?: string;
 }
 
 interface Manifest {
@@ -62,6 +68,9 @@ function imageEntry(c: Capture, file: string): ManifestImage {
     note: c.note,
     starred: c.starred || undefined,
     exposure: c.exposure,
+    diagnoses: c.diagnoses?.length ? c.diagnoses : undefined,
+    annotations: c.annotations?.length ? c.annotations : undefined,
+    annotatedFile: c.annotations?.length && c.annotatedPath ? c.annotatedPath.split('/').pop() : undefined,
   };
 }
 
@@ -125,17 +134,63 @@ export function updateArchivedMetadata(root: FileSystemDirectoryHandle, patient:
 }
 
 /** Rename the archived file so its name matches a new eye / technique label. Returns the new relative path. */
-export function renameArchived(root: FileSystemDirectoryHandle, patient: Patient, visit: Visit, capture: Capture, newFileName: string): Promise<string> {
+export function renameArchived(
+  root: FileSystemDirectoryHandle,
+  patient: Patient,
+  visit: Visit,
+  capture: Capture,
+  newFileName: string,
+): Promise<{ archivedPath: string; annotatedPath?: string } | null> {
   return enqueue(async () => {
-    if (!capture.archivedPath) return '';
+    if (!capture.archivedPath) return null;
     const segs = capture.archivedPath.split('/');
     const oldName = segs.pop()!;
     const dir = await getDirPath(root, segs, false);
     let name = newFileName;
     for (let n = 2; name !== oldName && (await fileExists(dir, name)); n++) name = withSuffix(newFileName, n);
     await renameFile(dir, oldName, name);
-    await updateManifest(dir, patient, visit, (imgs) => imgs.map((i) => (i.file === oldName ? imageEntry(capture, name) : i)));
-    return [...segs, name].join('/');
+    // The annotated copy follows its original.
+    let annotatedPath = capture.annotatedPath;
+    if (annotatedPath) {
+      const oldAnnotated = annotatedPath.split('/').pop()!;
+      try {
+        await renameFile(dir, oldAnnotated, annotatedName(name));
+        annotatedPath = [...segs, annotatedName(name)].join('/');
+      } catch (e) {
+        if (!isNotFound(e)) throw e;
+        annotatedPath = undefined;
+      }
+    }
+    await updateManifest(dir, patient, visit, (imgs) => imgs.map((i) => (i.file === oldName ? imageEntry({ ...capture, annotatedPath }, name) : i)));
+    return { archivedPath: [...segs, name].join('/'), annotatedPath };
+  });
+}
+
+/**
+ * Write (or remove) the "_annotated" copy that sits beside an archived photo,
+ * so the marks are visible to anyone opening the folder without Lumen.
+ * Pass `blob: null` when the photo no longer has any marks.
+ */
+export function syncAnnotatedCopy(root: FileSystemDirectoryHandle, patient: Patient, visit: Visit, capture: Capture, blob: Blob | null): Promise<string | undefined> {
+  return enqueue(async () => {
+    if (!capture.archivedPath) return undefined;
+    const segs = capture.archivedPath.split('/');
+    const file = segs.pop()!;
+    const dir = await getDirPath(root, segs, false);
+    const name = annotatedName(file);
+    const previous = capture.annotatedPath?.split('/').pop();
+    if (previous && previous !== name) await dir.removeEntry(previous).catch(() => undefined);
+    let annotatedPath: string | undefined;
+    if (blob) {
+      await writeFile(dir, name, blob);
+      annotatedPath = [...segs, name].join('/');
+    } else {
+      await dir.removeEntry(name).catch((e) => {
+        if (!isNotFound(e)) throw e;
+      });
+    }
+    await updateManifest(dir, patient, visit, (imgs) => imgs.map((i) => (i.file === file ? imageEntry({ ...capture, annotatedPath }, file) : i)));
+    return annotatedPath;
   });
 }
 
@@ -156,6 +211,7 @@ export function removeArchived(root: FileSystemDirectoryHandle, patient: Patient
     } catch (e) {
       if (!isNotFound(e)) throw e; // already deleted by hand: still tidy the manifest
     }
+    await dir.removeEntry(annotatedName(file)).catch(() => undefined);
     await updateManifest(dir, patient, visit, (imgs) => imgs.filter((i) => i.file !== file));
   });
 }

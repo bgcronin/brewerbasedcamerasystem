@@ -58,8 +58,9 @@ export function TopBar() {
         value={view}
         onChange={setView}
         options={[
-          { value: 'capture', label: <><Icon name="camera" size={16} />Capture</>, title: 'Capture (V)' },
-          { value: 'review', label: <><Icon name="grid" size={16} />Review</>, title: 'Review (V)' },
+          { value: 'capture', label: <><Icon name="camera" size={16} />Capture</>, title: 'Take photographs (V)' },
+          { value: 'review', label: <><Icon name="grid" size={16} />Review</>, title: 'This patient’s photographs (V)' },
+          { value: 'library', label: <><Icon name="search" size={16} />Library</>, title: 'Search every photograph (Ctrl+K)' },
         ]}
       />
 

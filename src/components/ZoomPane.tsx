@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type PointerEvent as RPointerEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type PointerEvent as RPointerEvent, type ReactNode } from 'react';
 import { cx } from './ui';
 
 export interface ZoomState {
@@ -13,6 +13,10 @@ export const ZOOM_FIT: ZoomState = { zoom: 1, x: 0, y: 0 };
  * Image viewer with wheel / pinch zoom around the pointer, drag to pan and
  * double-click to toggle between fit and 1:1 pixels. Controlled, so two panes
  * can share one state for synchronised comparison.
+ *
+ * `overlay` is drawn over the photo and moves with it (annotations). While
+ * `locked`, the left button belongs to the overlay (drawing): scrolling still
+ * zooms and the middle button still pans.
  */
 export function ZoomPane({
   src,
@@ -22,6 +26,8 @@ export function ZoomPane({
   onView,
   alt,
   className,
+  overlay,
+  locked = false,
 }: {
   src: string | null;
   naturalWidth: number;
@@ -30,6 +36,8 @@ export function ZoomPane({
   onView: (v: ZoomState) => void;
   alt: string;
   className?: string;
+  overlay?: ReactNode;
+  locked?: boolean;
 }) {
   const box = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 1, h: 1 });
@@ -89,8 +97,9 @@ export function ZoomPane({
   }, [zoomAt]);
 
   const onPointerDown = (e: RPointerEvent) => {
-    if (e.button !== 0) return;
-    (e.target as Element).setPointerCapture?.(e.pointerId);
+    if (locked ? e.button !== 1 : e.button !== 0) return;
+    if (e.button === 1) e.preventDefault(); // no auto-scroll cursor
+    (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
     drag.current = { id: e.pointerId, x: e.clientX, y: e.clientY, start: viewRef.current };
   };
   const onPointerMove = (e: RPointerEvent) => {
@@ -102,6 +111,7 @@ export function ZoomPane({
     drag.current = null;
   };
   const onDoubleClick = (e: React.MouseEvent) => {
+    if (locked) return;
     const v = viewRef.current;
     if (v.zoom > 1.01) onView(ZOOM_FIT);
     else zoomAt(e.clientX, e.clientY, Math.max(2, 1 / (fitScale || 1)) / v.zoom);
@@ -110,7 +120,7 @@ export function ZoomPane({
   return (
     <div
       ref={box}
-      className={cx('zoom-pane', view.zoom > 1 && 'is-zoomed', className)}
+      className={cx('zoom-pane', view.zoom > 1 && 'is-zoomed', locked && 'is-locked', className)}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
@@ -118,17 +128,10 @@ export function ZoomPane({
       onDoubleClick={onDoubleClick}
     >
       {src ? (
-        <img
-          src={src}
-          alt={alt}
-          draggable={false}
-          style={{
-            width: dispW,
-            height: dispH,
-            transform: `translate(${view.x}px, ${view.y}px) scale(${view.zoom})`,
-            imageRendering: view.zoom * fitScale >= 2 ? 'pixelated' : 'auto',
-          }}
-        />
+        <div className="zoom-content" style={{ width: dispW, height: dispH, transform: `translate(${view.x}px, ${view.y}px) scale(${view.zoom})` }}>
+          <img src={src} alt={alt} draggable={false} style={{ imageRendering: view.zoom * fitScale >= 2 ? 'pixelated' : 'auto' }} />
+          {overlay}
+        </div>
       ) : (
         <div className="spinner" />
       )}

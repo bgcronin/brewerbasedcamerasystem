@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import { ageFromDOB, formatShortDate, todayISO } from '../lib/dates';
+import { addDiagnosis, hasDiagnosis } from '../lib/diagnoses';
 import { displayName } from '../lib/names';
 import { TECHNIQUES, techniqueLabel, type Eye } from '../lib/types';
 import { shutter } from '../state/actions';
@@ -16,7 +17,8 @@ import {
   useCanon,
   type ExposureKey,
 } from '../state/canon';
-import { openSheet, setEye, setView, useApp } from '../state/store';
+import { openSheet, setEye, setView, setVisitDiagnoses, useApp } from '../state/store';
+import { DiagnosisPicker } from './DiagnosisPicker';
 import { Icon } from './Icon';
 import { Avatar, Button, Kbd, cx } from './ui';
 
@@ -154,6 +156,52 @@ function TechniqueGrid() {
         </button>
       ))}
     </div>
+  );
+}
+
+/** Label the visit once; every photo taken today carries it and can be found by it later. */
+function DiagnosisSection() {
+  const patient = useApp((s) => s.patient);
+  const diagnoses = useApp((s) => s.diagnoses);
+  const captures = useApp((s) => s.captures);
+  const recent = useApp((s) => s.settings.recentDiagnoses);
+  // What this patient has been labelled with before, most recent first.
+  const earlier = useMemo(() => {
+    let list: string[] = [];
+    for (const c of [...captures].sort((a, b) => b.takenAt - a.takenAt)) for (const d of c.diagnoses ?? []) list = addDiagnosis(list, d);
+    return list;
+  }, [captures]);
+  const preferred = useMemo(() => {
+    let list = earlier;
+    for (const d of recent ?? []) list = addDiagnosis(list, d);
+    return list;
+  }, [earlier, recent]);
+  if (!patient) return null;
+  const today = todayISO();
+  const count = captures.filter((c) => c.date === today).length;
+  const quick = earlier.filter((d) => !hasDiagnosis(diagnoses, d)).slice(0, 3);
+  return (
+    <section className="insp-section">
+      <h3 className="insp-title">
+        Diagnosis
+        <span className="insp-keys">
+          {count > 0 && diagnoses.length > 0 && <span>on today’s {count === 1 ? 'photo' : `${count} photos`}</span>}
+          <Kbd>D</Kbd>
+        </span>
+      </h3>
+      <DiagnosisPicker inputId="dx-input" value={diagnoses} onChange={(next) => void setVisitDiagnoses(next)} preferred={preferred} placeholder="Label today’s photos…" />
+      {quick.length > 0 && (
+        <div className="dx-quick">
+          <span>Before</span>
+          {quick.map((d) => (
+            <button key={d} type="button" className="dx-quick-btn" onClick={() => void setVisitDiagnoses(addDiagnosis(diagnoses, d))} title={`Label today’s photos “${d}”`}>
+              <Icon name="plus" size={11} strokeWidth={2.2} />
+              {d}
+            </button>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -328,6 +376,7 @@ export function Inspector() {
         </h3>
         <TechniqueGrid />
       </section>
+      <DiagnosisSection />
       {isCanon && <CameraPanel />}
       <div className="flex-1" />
       <ShutterArea />

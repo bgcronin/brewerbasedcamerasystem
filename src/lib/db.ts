@@ -289,6 +289,15 @@ export async function capturesForDate(date: string): Promise<Capture[]> {
   return (await db()).getAllFromIndex('captures', 'date', date);
 }
 
+export async function allCaptures(): Promise<Capture[]> {
+  return (await db()).getAll('captures');
+}
+
+/** True when the marks on a photo have changed since its "_annotated" copy was last written. */
+export function annotatedCopyStale(c: Capture): boolean {
+  return !!c.archivedPath && (c.annotationsAt ?? 0) > (c.annotatedAt ?? 0);
+}
+
 export async function unarchivedCaptures(): Promise<Capture[]> {
   const all = await (await db()).getAll('captures');
   return all.filter((c) => !c.archivedPath);

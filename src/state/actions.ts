@@ -33,8 +33,22 @@ export function shutter(): void {
   void captureFromLive(() => cam.grab(), cam.deviceLabel);
 }
 
+/** "/" finds a patient on today's list; in the Library it searches every photograph. */
 export function focusSearch(): void {
-  document.querySelector<HTMLInputElement>('#worklist-search')?.focus();
+  const id = useApp.getState().view === 'library' ? '#library-search' : '#worklist-search';
+  const el = document.querySelector<HTMLInputElement>(id);
+  el?.focus();
+  el?.select();
+}
+
+/** Ctrl+K from anywhere: open the Library with the cursor in its search box. */
+export function openLibrarySearch(): void {
+  setView('library');
+  window.setTimeout(() => {
+    const el = document.querySelector<HTMLInputElement>('#library-search');
+    el?.focus();
+    el?.select();
+  }, 0);
 }
 
 export function toggleStageFullscreen(): void {
@@ -80,20 +94,21 @@ function isTyping(t: EventTarget | null): boolean {
 export function onGlobalKeyDown(e: KeyboardEvent): void {
   const s = useApp.getState();
   if (document.querySelector('[data-modal]') || s.lightbox || s.compare) return;
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+    e.preventDefault();
+    openLibrarySearch();
+    return;
+  }
   if (isTyping(e.target)) {
     if (e.key === 'Escape') (e.target as HTMLElement).blur();
     return;
   }
-  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
-    e.preventDefault();
-    focusSearch();
-    return;
-  }
   if (e.metaKey || e.ctrlKey || e.altKey) return;
 
+  const capturing = s.view === 'capture';
   if (s.settings.captureKeys.includes(e.code)) {
     e.preventDefault();
-    if (!e.repeat && s.view === 'capture') shutter();
+    if (!e.repeat && capturing) shutter();
     return;
   }
   // Holding a key must not toggle things repeatedly (arrow keys may repeat to scroll the list).
@@ -101,45 +116,56 @@ export function onGlobalKeyDown(e: KeyboardEvent): void {
   if (e.repeat && !arrow) return;
 
   const key = e.key.toLowerCase();
-  const digit = e.code.match(/^(?:Digit|Numpad)([1-9])$/);
-  const n = digit ? Number(digit[1]) : NaN;
-  if (n >= 1 && n <= TECHNIQUES.length) {
-    const id = TECHNIQUES[n - 1].id;
-    chooseTechnique(s.technique === id ? null : id);
-    return;
-  }
-  if (e.code === 'Digit0' || e.code === 'Numpad0') {
-    chooseTechnique(null);
-    return;
+  // The labelling keys only act where their controls are on screen, so nothing changes unseen.
+  if (capturing) {
+    const digit = e.code.match(/^(?:Digit|Numpad)([1-9])$/);
+    const n = digit ? Number(digit[1]) : NaN;
+    if (n >= 1 && n <= TECHNIQUES.length) {
+      const id = TECHNIQUES[n - 1].id;
+      chooseTechnique(s.technique === id ? null : id);
+      return;
+    }
+    if (e.code === 'Digit0' || e.code === 'Numpad0') {
+      chooseTechnique(null);
+      return;
+    }
+    switch (key) {
+      case 'r':
+        setEye('OD');
+        return;
+      case 'l':
+        setEye('OS');
+        return;
+      case 'b':
+        setEye('OU');
+        return;
+      case 'g':
+        void updateSettings({ reticle: !s.settings.reticle });
+        return;
+      case 'f':
+        toggleStageFullscreen();
+        return;
+      case 'd':
+        e.preventDefault();
+        document.querySelector<HTMLInputElement>('#dx-input')?.focus();
+        return;
+    }
   }
   switch (key) {
-    case 'r':
-      setEye('OD');
-      break;
-    case 'l':
-      setEye('OS');
-      break;
-    case 'b':
-      setEye('OU');
-      break;
     case 'arrowdown':
     case 'j':
+      if (s.view === 'library') break;
       e.preventDefault();
       selectAdjacent(1);
       break;
     case 'arrowup':
     case 'k':
+      if (s.view === 'library') break;
       e.preventDefault();
       selectAdjacent(-1);
       break;
-    case 'g':
-      void updateSettings({ reticle: !s.settings.reticle });
-      break;
     case 'v':
       setView(s.view === 'capture' ? 'review' : 'capture');
-      break;
-    case 'f':
-      if (s.view === 'capture') toggleStageFullscreen();
       break;
     case '/':
       e.preventDefault();
