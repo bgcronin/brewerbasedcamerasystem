@@ -130,7 +130,7 @@ export function App() {
           <div className="drop-card">
             <Icon name="import" size={28} />
             <strong>Drop to import</strong>
-            <span>A clinic list adds patients. Photos go to the selected patient.</span>
+            <span>A PDF or CSV list adds patients. Photos go to the selected patient.</span>
           </div>
         </div>
       )}

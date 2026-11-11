@@ -35,18 +35,26 @@ export const jsonImporter: WorklistImporter = {
   },
 };
 
+const IMAGE_TYPES = /^image\/(png|jpeg|webp)$/;
+const isImage = (f: File) => ['png', 'jpg', 'jpeg', 'webp'].includes(ext(f)) || IMAGE_TYPES.test(f.type);
+
 /** A printed list: PDF (its own text, or OCR for scans), or a photo / scan as PNG, JPEG or WebP. Read entirely on this computer. */
 export const scanImporter: WorklistImporter = {
   id: 'scan',
   label: 'PDF, scan or photo of the printed list',
   description: 'Read on this computer; nothing is uploaded.',
   accept: '.pdf,.png,.jpg,.jpeg,.webp,application/pdf,image/png,image/jpeg,image/webp',
-  matches: (f) => ['pdf', 'png', 'jpg', 'jpeg', 'webp'].includes(ext(f)) || f.type === 'application/pdf' || /^image\/(png|jpeg|webp)$/.test(f.type),
-  async read(file, onProgress): Promise<ImportResult> {
+  matches: (f) => ext(f) === 'pdf' || f.type === 'application/pdf' || isImage(f),
+  async read(file, onProgress, signal): Promise<ImportResult> {
     const { scanList } = await import('./scan');
-    const r = await scanList(file, onProgress);
-    const flaggedRows = r.parsed.map((p, i) => (p.flagged ? i : -1)).filter((i) => i >= 0);
-    return { kind: 'table', table: { rows: r.rows }, sourceName: file.name, notes: r.notes, flaggedRows };
+    const r = await scanList(file, onProgress, signal);
+    return {
+      kind: 'table',
+      table: { rows: r.rows },
+      sourceName: file.name,
+      source: 'scan',
+      reading: { rows: r.readings, hasHeader: r.hasHeader, mapping: r.mapping, how: r.how, warnings: r.warnings, notUsed: r.notUsed, pagesNotRead: r.pagesNotRead },
+    };
   },
 };
 
@@ -62,6 +70,18 @@ export function importerFor(file: File): WorklistImporter | undefined {
 }
 
 export const ACCEPT_ALL = IMPORTERS.map((i) => i.accept).join(',');
+
+/**
+ * Files dropped anywhere on the window. A picture there is a photograph for
+ * the selected patient, as it always was; only a document (PDF, CSV, TSV,
+ * JSON) opens the list import. A photo of a printed list goes to the import
+ * sheet's own drop zone, where it cannot be mistaken for a photo of an eye.
+ */
+export function routeDroppedFiles(files: File[]): { list?: File; photos: File[] } {
+  const photos = files.filter((f) => isImage(f) || /^image\//.test(f.type));
+  const list = files.find((f) => !photos.includes(f) && importerFor(f));
+  return { list, photos };
+}
 
 /** UTF-16 by BOM, or by the NUL in every other byte that ASCII text has in UTF-16LE (Excel "Unicode Text" saves). */
 function detectUtf16(bytes: Uint8Array): 'utf-16le' | 'utf-16be' | undefined {

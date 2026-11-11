@@ -1,4 +1,5 @@
 import { inferDateOrderDetailed, parseDate, parseTime, type DateOrderResolved } from '../dates';
+import { readBirthDate, readTime } from './shapes';
 import { normaliseNamePart, normaliseSex, splitFullName } from '../names';
 import type { ImportedRecord, PatientField } from './types';
 
@@ -49,6 +50,9 @@ export function normaliseHeader(h: string): string {
     .trim();
 }
 
+/** National numbers. A list that also prints a hospital number is filed by that. */
+const SECONDARY_IDS = new Set(['nhs number', 'nhs no', 'ihi', 'chi', 'chi number']);
+
 /** Synonyms too generic to match loosely on their own: "Last Visit" is not a surname column. */
 const NO_LOOSE_MATCH = new Set(['last', 'first', 'second', 'id', 'pid', 'no']);
 
@@ -56,7 +60,7 @@ function scoreHeader(header: string, field: Exclude<PatientField, 'ignore'>): nu
   const h = normaliseHeader(header);
   if (!h) return 0;
   const syn = SYNONYMS[field];
-  if (syn.includes(h)) return 100;
+  if (syn.includes(h)) return field === 'mrn' && SECONDARY_IDS.has(h) ? 95 : 100;
   // Loose matches: "Patient Surname", "Pt. DOB (dd/mm/yyyy)", "Appointment Start Time".
   const words = new Set(h.split(' '));
   let best = 0;
@@ -174,6 +178,10 @@ export interface MappedImport {
   /** Auto order was requested but no value could decide day/month, so the DMY default was assumed. */
   dateOrderAmbiguous: boolean;
   datesInFile: string[];
+  /** Dates of birth that are in the future or would make someone over 120: left blank rather than saved. */
+  birthDatesRejected: number;
+  /** Rows with neither a patient ID nor a date of birth: they cannot be matched safely to an existing record. */
+  nameOnly: number;
 }
 
 export function applyMapping(
@@ -198,6 +206,8 @@ export function applyMapping(
   const records: ImportedRecord[] = [];
   const dates = new Set<string>();
   let skipped = 0;
+  let birthDatesRejected = 0;
+  let nameOnly = 0;
 
   for (const row of dataRows) {
     let firstName = normaliseNamePart(get(row, 'firstName'));
@@ -222,12 +232,16 @@ export function applyMapping(
     // Combined "03/11/2026 09:30" values can sit in either column.
     const date = parseDate(rawDate, dateOrder) ?? (/\d{1,4}[/.\-]\d{1,2}[/.\-]\d{1,4}/.test(rawTime) ? parseDate(rawTime, dateOrder) : undefined);
     if (date) dates.add(date);
-    const time = parseTime(rawTime) ?? (rawDate ? parseTime(rawDate) : undefined);
+    const time = readTime(rawTime) ?? parseTime(rawTime) ?? (rawDate ? parseTime(rawDate) : undefined);
+    const birth = readBirthDate(get(row, 'dob'), dateOrder);
+    if (birth.unusable && parseDate(get(row, 'dob'), dateOrder, true)) birthDatesRejected++;
+    const dob = birth.unusable ? undefined : birth.iso;
+    if (!mrn && !dob) nameOnly++;
     records.push({
       mrn: mrn || undefined,
       firstName,
       lastName,
-      dob: parseDate(get(row, 'dob'), dateOrder, true),
+      dob,
       sex: normaliseSex(get(row, 'sex')),
       date,
       time,
@@ -237,5 +251,5 @@ export function applyMapping(
       notes: get(row, 'notes') || undefined,
     });
   }
-  return { records, skipped, dateOrder, dateOrderAmbiguous, datesInFile: [...dates].sort() };
+  return { records, skipped, dateOrder, dateOrderAmbiguous, datesInFile: [...dates].sort(), birthDatesRejected, nameOnly };
 }

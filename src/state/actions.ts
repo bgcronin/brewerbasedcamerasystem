@@ -1,4 +1,4 @@
-import { importerFor } from '../lib/importers';
+import { importerFor, routeDroppedFiles } from '../lib/importers';
 import { useCamera } from './camera';
 import { canonShutter, chooseTechnique } from './canon';
 import {
@@ -58,32 +58,70 @@ export function toggleStageFullscreen(): void {
   else void el.requestFullscreen?.().catch(() => undefined);
 }
 
+/** The read in progress, if any. Only the newest read may put anything on screen. */
+let reading: { id: number; abort: AbortController } | null = null;
+let readCount = 0;
+
+/** Stop reading a list: the worker is shut down and whatever it would have found is dropped. Safe to call at any time. */
+export function cancelImportRead(): void {
+  reading?.abort.abort();
+  reading = null;
+}
+
 export async function openFileForImport(file: File): Promise<void> {
   const importer = importerFor(file);
   if (!importer) {
-    toast({ tone: 'warning', message: 'That file type can’t be imported', detail: 'Use a CSV, TSV or JSON list.' });
+    const heic = /\.hei[cf]$/i.test(file.name) || /hei[cf]/.test(file.type);
+    toast({
+      tone: 'warning',
+      message: 'That file type can’t be imported',
+      detail: heic ? 'iPhone HEIC photos can’t be read here. Share the photo as a JPEG, or take a screenshot of it.' : 'Use a CSV or PDF list, or a JPEG or PNG scan or photo of the printed list.',
+    });
     return;
   }
+  cancelImportRead();
+  const mine = { id: ++readCount, abort: new AbortController() };
+  reading = mine;
+  const current = () => reading === mine && !mine.abort.signal.aborted;
   // Reading a scan can take a few seconds, so show progress in the sheet rather than a blank wait.
   openSheet({ type: 'import', reading: { name: file.name, label: 'Opening' } });
   try {
-    const result = await importer.read(file, (p) => {
-      const s = useApp.getState().sheet;
-      if (s?.type === 'import' && s.reading) openSheet({ type: 'import', reading: { name: file.name, ...p } });
-    });
-    if (useApp.getState().sheet?.type !== 'import') return; // closed while reading
+    const result = await importer.read(
+      file,
+      (p) => {
+        if (current() && useApp.getState().sheet?.type === 'import') openSheet({ type: 'import', reading: { name: file.name, ...p } });
+      },
+      mine.abort.signal,
+    );
+    // Closed, or another file chosen, while this one was being read: it must not replace what is on screen now.
+    if (!current()) return;
+    reading = null;
+    if (useApp.getState().sheet?.type !== 'import') return;
+    if (result.kind === 'table' && result.reading && result.table.rows.length <= (result.reading.hasHeader ? 1 : 0)) {
+      openSheet({ type: 'import' });
+      const pages = result.reading.pagesNotRead;
+      toast({
+        tone: 'warning',
+        message: 'No patients could be read from that file',
+        detail: `Lumen looked for rows with a name and a hospital number or date of birth and found none${pages ? ` (${pages} page${pages === 1 ? ' was' : 's were'} not read)` : ''}. For a photo: fill the frame with the list, keep it flat and evenly lit.`,
+        duration: 12000,
+      });
+      return;
+    }
     openSheet({ type: 'import', result });
   } catch (e) {
-    openSheet({ type: 'import' });
-    toast({ tone: 'error', message: 'Couldn’t read that file', detail: (e as Error).message });
+    if (!current()) return;
+    reading = null;
+    if (useApp.getState().sheet?.type === 'import') openSheet({ type: 'import' });
+    const detail = e instanceof Error ? e.message : typeof e === 'string' ? e : '';
+    toast({ tone: 'error', message: 'Couldn’t read that file', detail: detail || 'The file may be damaged or of a kind Lumen can’t read.', duration: 12000 });
   }
 }
 
 export async function handleDroppedFiles(files: File[]): Promise<void> {
-  const list = files.filter((f) => importerFor(f));
-  const images = files.filter((f) => /\.(jpe?g|png|webp)$/i.test(f.name) || /^image\//.test(f.type));
-  if (list.length) await openFileForImport(list[0]);
-  else if (images.length) await importFiles(images);
+  const { list, photos } = routeDroppedFiles(files);
+  if (list) await openFileForImport(list);
+  else if (photos.length) await importFiles(photos);
 }
 
 function isTyping(t: EventTarget | null): boolean {

@@ -2248,13 +2248,47 @@ button.cam-preset:hover {
   color: var(--text);
   font-weight: 600;
 }
-.map-table-wrap {
+.map-table-frame {
+  position: relative;
   margin-top: 12px;
-  overflow: auto;
+  min-height: 0;
+  display: flex;
+  flex: 0 1 auto;
   border-radius: var(--r);
   box-shadow: 0 0 0 0.5px var(--hairline-2);
-  max-height: 300px;
-  min-height: 120px;
+  overflow: hidden;
+}
+/* The table is wider than the sheet when a list has many columns: fade the edge it continues past. */
+.map-table-frame::before,
+.map-table-frame::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 44px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 160ms var(--ease);
+  z-index: 3;
+}
+.map-table-frame::before {
+  left: 0;
+  background: linear-gradient(to right, var(--surface), transparent);
+}
+.map-table-frame::after {
+  right: 0;
+  background: linear-gradient(to left, var(--surface), transparent);
+}
+.map-table-frame.more-left::before,
+.map-table-frame.more-right::after {
+  opacity: 1;
+}
+.map-table-wrap {
+  flex: 1 1 auto;
+  overflow: auto;
+  /* As many rows as the window has room for once the rest of the sheet is counted. */
+  max-height: clamp(204px, calc(100vh - 500px), 460px);
+  min-height: 132px;
 }
 .map-table {
   border-collapse: separate;
@@ -2272,8 +2306,14 @@ button.cam-preset:hover {
   padding: 10px 8px 10px;
   background: var(--surface-2);
   border-bottom: 1px solid var(--hairline-2);
-  min-width: 172px;
+  min-width: 120px;
   vertical-align: top;
+}
+.map-table th.map-tools,
+.map-table td.map-tools {
+  min-width: 0;
+  width: 30px;
+  padding: 0 0 0 6px;
 }
 .map-head {
   font-size: var(--fs-xs);
@@ -2284,22 +2324,225 @@ button.cam-preset:hover {
   text-overflow: ellipsis;
   max-width: 200px;
 }
+.map-table .select {
+  width: 100%;
+}
 .map-table .select.is-mapped {
   box-shadow: inset 0 0 0 1px var(--accent-line);
   background-color: var(--accent-softer);
   color: var(--text);
   font-weight: 500;
 }
+/* A chosen field keeps its tint, and every select in the sheet still shows where the keyboard is. */
+.import-sheet .select:focus,
+.import-sheet .select:focus-visible,
+.import-sheet .select.is-mapped:focus,
+.import-sheet .select.is-mapped:focus-visible {
+  box-shadow:
+    inset 0 0 0 1.5px var(--accent),
+    var(--accent-glow);
+  outline: none;
+}
 .map-table td {
-  padding: 7px 10px;
+  padding: 2px 4px;
   border-bottom: 1px solid var(--hairline);
   white-space: nowrap;
-  max-width: 240px;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
-.map-table td.is-ignored {
+.map-table td.is-ignored .cell {
   color: var(--text-3);
+}
+/* Every cell can be corrected in place. It reads as plain text until it is pointed at or typed in. */
+.map-table .cell {
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  padding: 5px 6px;
+  min-width: 100%;
+  max-width: 320px;
+  box-sizing: border-box;
+}
+.map-table .cell.mrn {
+  font-family: var(--font-id);
+}
+.map-table .cell:hover {
+  background: var(--surface-2);
+}
+.map-table .cell:focus {
+  outline: none;
+  background: var(--surface);
+  box-shadow:
+    inset 0 0 0 1px var(--accent-line),
+    var(--accent-glow);
+}
+.map-table td.is-doubt .cell {
+  box-shadow: inset 0 0 0 1px var(--warning);
+}
+.map-table td.is-doubt .cell:focus {
+  box-shadow:
+    inset 0 0 0 1.5px var(--warning),
+    var(--accent-glow);
+}
+.row-remove {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  color: var(--text-3);
+}
+.row-remove:hover,
+.row-remove:focus-visible {
+  background: var(--surface-3);
+  color: var(--text);
+}
+.map-table tr.is-flagged td {
+  border-bottom-color: transparent;
+}
+.map-table tr.row-why td {
+  padding: 0;
+  background: var(--warning-soft);
+  white-space: normal;
+}
+/* Stays in view while the table scrolls sideways, so the reason is always readable. */
+.row-why-inner {
+  position: sticky;
+  left: 0;
+  width: var(--frame-w, 100%);
+  max-width: var(--frame-w, 100%);
+  box-sizing: border-box;
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 2px 14px 10px 40px;
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+.row-why-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text);
+}
+.row-why-text strong {
+  font-weight: 550;
+}
+.row-source {
+  display: block;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.row-ok {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.row-ok input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
+}
+.row-ok.is-blocked {
+  cursor: default;
+  font-weight: 400;
+  color: var(--text-2);
+}
+.map-table tr.is-flagged.is-confirmed td,
+.map-table tr.row-why.is-confirmed td {
+  background: var(--surface-2);
+}
+.map-table tr.is-flagged.is-confirmed td:first-child {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.import-status {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: var(--fs);
+}
+.import-status p {
+  margin: 0;
+}
+.import-count strong {
+  font-weight: 600;
+}
+.import-tocheck {
+  color: var(--warning);
+  font-weight: 500;
+}
+.import-status .import-warning {
+  align-items: flex-start;
+}
+.import-status .import-warning svg {
+  flex: none;
+  margin-top: 2px;
+}
+.import-unused {
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+}
+.import-unused summary {
+  cursor: pointer;
+  width: fit-content;
+  border-radius: 6px;
+  padding: 1px 4px;
+  margin-left: -4px;
+}
+.import-unused summary:focus-visible {
+  outline: none;
+  box-shadow: var(--accent-glow);
+}
+.import-unused ul {
+  margin: 6px 0 0;
+  padding: 8px 12px;
+  list-style: none;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  max-height: 96px;
+  overflow: auto;
+}
+.import-unused li {
+  overflow-wrap: anywhere;
+}
+.import-rows-note {
+  margin-top: 8px;
+  margin-bottom: 0;
+  font-size: var(--fs-sm);
+}
+.import-sheet {
+  max-width: 94vw;
+}
+.import-map {
+  overflow-y: auto;
+}
+.import-map .sheet-foot {
+  position: sticky;
+  bottom: 0;
+  z-index: 4;
+  background: var(--surface);
+}
+/* On a short window the table matters more than a long preview. */
+@media (max-height: 820px) {
+  .import-preview {
+    margin-top: 12px;
+    margin-bottom: 12px;
+    padding: 10px 14px;
+  }
+  .preview-list li:nth-child(n + 3) {
+    display: none;
+  }
+  .import-options {
+    margin-top: 12px;
+  }
+}
+.import-reading .btn {
+  margin-top: 14px;
 }
 .map-table tr:last-child td {
   border-bottom: 0;
