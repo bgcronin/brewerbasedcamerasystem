@@ -50,14 +50,18 @@ export function useThumb(id: string | null | undefined): string | null {
   return url;
 }
 
-/** Full-resolution image for viewing; the URL is released when the viewer moves on. */
-export function useFullImage(id: string | null | undefined): string | null {
-  const [url, setUrl] = useState<string | null>(null);
+/**
+ * Full-resolution image for viewing; the URL is released when the viewer moves on.
+ * `forId` says which photo the URL shows: while stepping to the next photo the previous
+ * one stays up for a moment, and anything drawn over it (annotations) must wait for the swap.
+ */
+export function useFullImageFor(id: string | null | undefined): { url: string | null; forId: string | null } {
+  const [shown, setShown] = useState<{ url: string | null; forId: string | null }>({ url: null, forId: null });
   useEffect(() => {
     if (!id) {
-      setUrl((old) => {
-        if (old) URL.revokeObjectURL(old);
-        return null;
+      setShown((old) => {
+        if (old.url) URL.revokeObjectURL(old.url);
+        return { url: null, forId: null };
       });
       return;
     }
@@ -66,15 +70,26 @@ export function useFullImage(id: string | null | undefined): string | null {
       if (!alive || !img) return;
       const made = URL.createObjectURL(img.full);
       // Swap only once the new image exists, so stepping between photos never shows a blank.
-      setUrl((old) => {
-        if (old) URL.revokeObjectURL(old);
-        return made;
+      setShown((old) => {
+        if (old.url) URL.revokeObjectURL(old.url);
+        return { url: made, forId: id };
       });
     });
     return () => {
       alive = false;
     };
   }, [id]);
-  useEffect(() => () => setUrl((old) => (old && URL.revokeObjectURL(old), null)), []);
-  return url;
+  useEffect(
+    () => () =>
+      setShown((old) => {
+        if (old.url) URL.revokeObjectURL(old.url);
+        return { url: null, forId: null };
+      }),
+    [],
+  );
+  return shown;
+}
+
+export function useFullImage(id: string | null | undefined): string | null {
+  return useFullImageFor(id).url;
 }

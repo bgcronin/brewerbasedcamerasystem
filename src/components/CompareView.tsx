@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { formatClock, formatShortDate } from '../lib/dates';
 import { displayName } from '../lib/names';
-import { useFullImage } from '../lib/thumbs';
+import { useFullImageFor } from '../lib/thumbs';
 import { techniqueLabel, type Capture } from '../lib/types';
 import { closeCompare, useApp } from '../state/store';
 import { AnnotationLayer } from './AnnotationLayer';
@@ -10,7 +10,7 @@ import { EyeTag, IconButton, Switch } from './ui';
 import { ZOOM_FIT, ZoomPane, type ZoomState } from './ZoomPane';
 
 function Pane({ c, view, onView, marks }: { c: Capture; view: ZoomState; onView: (v: ZoomState) => void; marks: boolean }) {
-  const url = useFullImage(c.id);
+  const { url, forId } = useFullImageFor(c.id);
   return (
     <div className="compare-pane">
       <ZoomPane
@@ -20,7 +20,7 @@ function Pane({ c, view, onView, marks }: { c: Capture; view: ZoomState; onView:
         view={view}
         onView={onView}
         alt=""
-        overlay={marks && c.annotations?.length ? <AnnotationLayer width={c.width} height={c.height} annotations={c.annotations} /> : null}
+        overlay={marks && forId === c.id && c.annotations?.length ? <AnnotationLayer width={c.width} height={c.height} annotations={c.annotations} /> : null}
       />
       <div className="compare-label glass">
         <EyeTag eye={c.eye} />

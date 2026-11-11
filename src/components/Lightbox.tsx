@@ -7,7 +7,7 @@ import { addDiagnosis, sameDiagnosis } from '../lib/diagnoses';
 import { uid } from '../lib/id';
 import { displayName } from '../lib/names';
 import { formatBytes, formatLabel, megapixels } from '../lib/naming';
-import { useFullImage } from '../lib/thumbs';
+import { useFullImageFor } from '../lib/thumbs';
 import { downloadBlob } from '../lib/zip';
 import { TECHNIQUES, techniqueLabel, type Annotation, type Capture, type Eye, type ImageFormat } from '../lib/types';
 import { applyDiagnosesToVisit, closeLightbox, deleteCapture, openCompare, setAnnotations, setCaptureDiagnoses, toast, updateCapture, useApp } from '../state/store';
@@ -56,7 +56,7 @@ export function Lightbox() {
   const index = lb ? Math.min(lb.index, ids.length - 1) : -1;
   const id = index >= 0 ? ids[index] : null;
   const c = id ? byId.get(id) : undefined;
-  const url = useFullImage(c?.id);
+  const { url, forId: shownId } = useFullImageFor(c?.id);
   const [note, setNote] = useState('');
 
   // Annotation state. `marks` is the working copy, so quick strokes never race the save.
@@ -320,7 +320,8 @@ export function Lightbox() {
             locked={drawing}
             className={cx(annotating && spaceHeld && 'is-panning')}
             overlay={
-              marksVisible && (marks.length > 0 || annotating) ? (
+              // Marks wait until their own photo is on screen (the previous one lingers for a moment when stepping).
+              marksVisible && shownId === c.id && (marks.length > 0 || annotating) ? (
                 <AnnotationLayer
                   width={c.width}
                   height={c.height}
