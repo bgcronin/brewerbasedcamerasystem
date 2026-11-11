@@ -148,19 +148,33 @@ Any CSV, TSV or text export works, including rows copied straight from Excel or 
 
 - Dates are read as **DD/MM/YYYY** or **MM/DD/YYYY** automatically from the data, and you can override this. When a file can't be told apart (every day is 12 or less), Lumen assumes day first and says so in the import sheet. ISO, `12-Mar-1956` and Excel serial dates also work.
 - Patients are matched across days by **MRN** (spacing and case are ignored, so `123 456 7890` and `1234567890` are the same number), so each person keeps one photo history. Without an MRN, matching falls back to name + date of birth. Two patients can never share an MRN: adding a patient with a known MRN attaches a visit to the existing record instead.
+- **An import never renames a patient or changes a date of birth.** When a row matches someone on record it fills in only what was blank. If a row's MRN belongs to somebody with a clearly different name (and the date of birth does not vouch for them), the row is left out and reported, because a mistyped or misread number must not move one patient's visit onto another. A row with neither an MRN nor a date of birth is not merged into a namesake: it gets its own record, and the import says so.
 - Each patient's archive folder name is fixed the first time a photo is written, so correcting a name or adding an MRN later never splits their history.
 - A sample list is in [`public/sample-worklist.csv`](public/sample-worklist.csv). Every patient in it is fictitious.
 
 ### From a printed list: PDF, scan or photo
 
-Drop a **PDF**, or a **PNG / JPEG** scan or phone photo of the printed clinic list, onto the window (or choose it from *Import list*). Lumen reads it **entirely on this computer**:
+Choose *Import list* and give it a **PDF**, or a **PNG / JPEG** scan or phone photo of the printed clinic list. (A PDF can also be dropped anywhere on the window. A picture dropped on the window is a photograph for the selected patient, so a photo of a list goes to the import sheet's own drop zone.) Lumen reads it **entirely on this computer**:
 
-- A PDF with a text layer (what most patient systems print) is read exactly from its text.
-- A scan, a photo, or an image-only PDF is read with Tesseract OCR running inside the browser. The OCR engine and its English language data are copied into Lumen's own folder at build time (`public/ocr`, about 23 MB), so nothing is fetched from the internet and no image ever leaves the PC. The test suite checks that no network request is made during an import.
+- A PDF with a text layer (what most patient systems print) is read exactly from its text, including landscape pages stored sideways.
+- A scan, a photo, or an image-only PDF is read with Tesseract OCR running inside the browser. A page that is sideways or upside down is turned, and the ruling lines of a bordered table are taken out first.
+- Everything the reader needs is copied into Lumen's own folder at build time (`public/ocr`, about 18 MB: the OCR engine, its English language data, and pdf.js's decoders and fonts for scanned PDFs). Nothing is fetched from the internet and no image ever leaves the PC. `tests/e2e/scan.cjs` checks that no request leaves the computer during an import, and `tests/e2e/offline.cjs` that a list still reads with the server stopped (both need Playwright).
 
-Each line is read for a **hospital number** (by its shape, e.g. `H100234` or an NHS number), a **date of birth**, a **time** and the **name**; headings, page footers and the clinic title are dropped. OCR can misread, so the import sheet highlights any row where something was missing or hard to read, and the preview shows exactly what will be saved before you confirm. Names split into surname and forename just as with CSV, and patients are matched to existing records by hospital number, so re-importing a list never creates duplicates.
+**How it reads.** Lumen rebuilds the table that was printed: rows from the lines of text, columns from the gaps that run down the whole page. Each column is then one thing for the whole list (hospital number, surname, date of birth and so on), decided from the printed headings where there are any and otherwise from what is in the column, and you can change any column once for every row. A value is only ever read from its own column, so an appointment type cannot become a name and a neighbouring word cannot become part of a number.
 
-Tips for photos: fill the frame with the list, keep it flat and evenly lit, and avoid shadows across the numbers. A list of 12 patients takes about two seconds to read.
+**When it is not sure, it says so.** Patient identity is not guessed. A row is held back, shown first with the reason and the line as it was printed, when:
+
+- there is no name, hospital number or date of birth where the other rows have one;
+- the hospital number is shaped differently from the rest of the list, or two rows share one number with different names;
+- OCR found a character hard to read, or read a look-alike (`O` for `0`, `l` for `1`) inside a number or date. Those are repaired only inside the digits, never in a letter prefix such as the `S` of `S100234`, and the row says what was printed;
+- the date of birth cannot be read, is in the future, or has a two-digit year that could be either century;
+- the line could not be laid out like the others, or a name was printed over two lines.
+
+A held-back row is **not imported** until you have corrected it (every cell can be edited) or ticked it as correct; the button says how many patients will be imported and how many still need checking. Rows can be removed. Lines that are not part of the table (titles, page footers) are listed under the table rather than hidden, and the sheet says if any pages or lines could not be read. If a picture mostly cannot be read, Lumen says that plainly instead of offering a few rows.
+
+Limits: up to 200 pages of PDF text and 20 pages that have to be read as pictures; English-language lists; a password-protected PDF has to be printed to a new PDF first; iPhone HEIC photos have to be shared as JPEG.
+
+Tips for photos: fill the frame with the list, keep it flat and evenly lit, and avoid shadows across the numbers. A page of 12 patients takes two or three seconds to read.
 
 ### Adding other import systems
 
@@ -172,11 +186,11 @@ interface WorklistImporter {
   label: string;
   accept: string;                       // file types for the picker
   matches(file: File): boolean;
-  read(file: File): Promise<ImportResult>;
+  read(file: File, onProgress?, signal?): Promise<ImportResult>;
 }
 ```
 
-Return `{ kind: 'table', … }` to get the column-mapping screen for free, or `{ kind: 'records', … }` when your source already knows which field is which (HL7 SIU, FHIR Appointment bundles, an EMR API). Add it to `IMPORTERS` in `index.ts` and it appears automatically. CSV and JSON importers are included as examples.
+Return `{ kind: 'table', … }` to get the column-mapping screen for free, or `{ kind: 'records', … }` when your source already knows which field is which (HL7 SIU, FHIR Appointment bundles, an EMR API). Add it to `IMPORTERS` in `index.ts` and it appears automatically. CSV and JSON importers are included as examples. `read` is also given a progress callback and an `AbortSignal` (aborted when the sheet is closed); a reader that has to interpret its source can return a `reading` with the table, to say which rows it was unsure of and why, and those rows are then held back for checking as above.
 
 ---
 
