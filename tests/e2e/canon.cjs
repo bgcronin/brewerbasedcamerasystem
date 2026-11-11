@@ -15,6 +15,7 @@ const URL = `http://localhost:${PORT}/`;
 const SHOTS = process.env.SHOTS;
 const DSF = Number(process.env.DSF || 1);
 const HELPER = path.join(__dirname, '..', '..', 'helper', 'src', 'main.js');
+const WebSocket = require(path.join(__dirname, '..', '..', 'helper', 'node_modules', 'ws'));
 
 function assert(cond, msg) {
   if (!cond) throw new Error('Assertion failed: ' + msg);
@@ -39,6 +40,25 @@ async function startHelper(extra = []) {
 
 const stopHelper = (proc) => new Promise((r) => (proc.once('exit', r), proc.kill('SIGTERM')));
 
+/**
+ * Press the simulated camera's own shutter button (the slit lamp's release). Resolves once the camera
+ * has taken the press; the photo itself reaches Lumen `delay` ms later, as it does from a real camera.
+ */
+const pressCameraButton = (delay = 350) =>
+  new Promise((resolve, reject) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${PORT}/camera`);
+    ws.on('error', reject);
+    ws.on('open', () => ws.send(JSON.stringify({ type: 'sim-button', id: 'press', delay })));
+    ws.on('message', (raw, isBinary) => {
+      if (isBinary) return;
+      const msg = JSON.parse(String(raw));
+      if (msg.type !== 'result' || msg.id !== 'press') return;
+      ws.close();
+      if (msg.ok) resolve();
+      else reject(new Error(msg.error));
+    });
+  });
+
 (async () => {
   let helper = await startHelper();
   const browser = await chromium.launch();
@@ -53,6 +73,13 @@ const stopHelper = (proc) => new Promise((r) => (proc.once('exit', r), proc.kill
     await page.screenshot({ path: path.join(SHOTS, name + '.png') });
   };
   const readout = () => page.locator('.exposure-readout').innerText();
+  const tiles = () => page.locator('.film-tile').count();
+  const waitForTiles = (n) => page.waitForFunction((want) => document.querySelectorAll('.film-tile').length === want, n, { timeout: 10000 });
+  // "OD 2" in the filmstrip heading → 2 (0 when that eye has no photos yet).
+  const eyeCount = async (eye) => {
+    const el = page.locator(`.film-counts .eye-${eye}`);
+    return (await el.count()) ? Number((await el.innerText()).replace(/\D/g, '')) : 0;
+  };
 
   try {
     console.log('Connect');
@@ -60,11 +87,20 @@ const stopHelper = (proc) => new Promise((r) => (proc.once('exit', r), proc.kill
     await page.waitForSelector('.app[data-ready]');
     await page.click('text=Try it with a sample list');
     await page.click('button:has-text("Import 12 patients")');
-    await page.click('.prow >> nth=0');
     await page.click('.source-chip');
     await page.click('.source-card:has-text("Canon EOS via Camera Link")');
     await page.waitForSelector('canvas.feed-video.is-live', { timeout: 10000 });
     assert(true, 'live view frames are drawn');
+
+    console.log('The camera’s own button, before a patient is chosen');
+    await pressCameraButton();
+    await page.waitForSelector('.held-banner', { timeout: 10000 });
+    assert(/1 photo waiting for a patient/.test(await page.locator('.held-banner').innerText()), 'the photo waits for a patient');
+    assert((await tiles()) === 0, 'and is filed to nobody yet');
+    await page.click('.prow >> nth=0');
+    await page.click('.held-banner button:has-text("File to")');
+    await waitForTiles(1);
+    assert((await page.locator('.held-banner').count()) === 0, 'choosing a patient and confirming files it to them');
     await page.waitForSelector('.exposure-readout');
     let r = await readout();
     assert(/1\/125/.test(r) && /ISO 400/.test(r) && /f\/8/.test(r), `viewfinder readout shows the camera’s settings (${r.replace(/\n/g, ' ')})`);
@@ -94,17 +130,36 @@ const stopHelper = (proc) => new Promise((r) => (proc.once('exit', r), proc.kill
     await shot('canon-capture');
 
     console.log('Capture');
+    for (const close of await page.locator('.toast-close').all()) await close.click().catch(() => undefined);
     await page.keyboard.press('Space');
-    await page.waitForSelector('.film-tile', { timeout: 10000 });
+    await waitForTiles(2);
     assert(true, 'photo from the camera is filed to the patient');
     await page.waitForTimeout(600);
     assert((await page.locator('.toast-error, .toast-warning').count()) === 0, 'capture is confirmed with no warnings');
-    await page.click('.film-tile .film-open');
+    await page.click('.film-tile >> nth=1 >> .film-open');
     await page.waitForSelector('.viewer .meta-list');
     const meta = await page.locator('.viewer .meta-list').innerText();
     assert(/ISO 1600/.test(meta) && /1\/125/.test(meta) && /f\/8/.test(meta), 'photo records the exposure it was taken with');
     assert(/direct/.test(meta), 'photo records the Canon as its source');
     await page.keyboard.press('Escape');
+
+    console.log('The camera’s own button, with a patient selected');
+    await page.keyboard.press('r');
+    await page.waitForSelector('.eye-opt.eye-od.is-on');
+    const [od, os] = [await eyeCount('od'), await eyeCount('os')];
+    await pressCameraButton(1500); // the photo takes a moment to come off the camera…
+    await page.waitForTimeout(150);
+    await page.keyboard.press('l'); // …and meanwhile the photographer has moved on to the left eye
+    await page.waitForSelector('.eye-opt.eye-os.is-on');
+    assert((await tiles()) === 2, 'the left eye is selected before the photo arrives');
+    await waitForTiles(3);
+    assert((await eyeCount('od')) === od + 1 && (await eyeCount('os')) === os, 'the photo is filed under the eye selected when the button was pressed');
+    await pressCameraButton();
+    await waitForTiles(4);
+    assert((await eyeCount('os')) === os + 1, 'the next one is filed under the eye selected now');
+    assert((await page.locator('.held-banner').count()) === 0, 'neither is left waiting');
+    assert((await page.locator('.toast-error, .toast-warning').count()) === 0, 'and there are no warnings');
+    await page.keyboard.press('r');
 
     await page.click('button[aria-label="Settings"]');
     await page.locator('.set-group:has-text("Canon camera presets")').scrollIntoViewIfNeeded();

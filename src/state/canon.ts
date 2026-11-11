@@ -6,7 +6,7 @@ import { create } from 'zustand';
 import { playShutter } from '../lib/sound';
 import { displayName } from '../lib/names';
 import { techniqueLabel, type CameraValues, type Eye, type Patient } from '../lib/types';
-import { fileHeldPhoto, holdPhoto, ingest, setTechnique, toast, transformFor, updateSettings, useApp } from './store';
+import { holdPhoto, ingest, setTechnique, toast, transformFor, updateSettings, useApp } from './store';
 
 export type LinkStatus = 'off' | 'connecting' | 'online' | 'offline';
 
@@ -66,7 +66,26 @@ let wantLiveView = false;
 let retry: number | undefined;
 let retryDelay = 1000;
 let nextId = 1;
-const pending = new Map<string, { resolve: (v: Record<string, unknown>) => void; reject: (e: Error) => void; timer: number }>();
+const pending = new Map<string, { resolve: (v: Record<string, unknown>) => void; reject: (e: Error) => void; timer: number; sock: WebSocket }>();
+
+/** A socket has closed or been replaced: its unanswered requests fail now, not at their timeout. */
+function settleRequests(sock: WebSocket, why: string): void {
+  for (const [id, p] of pending) {
+    if (p.sock !== sock) continue;
+    pending.delete(id);
+    window.clearTimeout(p.timer);
+    p.reject(new Error(why));
+  }
+}
+
+/** Let go of the current socket (to stop, or to open a fresh one). */
+function dropSocket(why: string): void {
+  const old = ws;
+  ws = null;
+  if (!old) return;
+  settleRequests(old, why);
+  old.close();
+}
 
 export function linkUrl(): string {
   const custom = useApp.getState().settings.cameraLinkUrl.trim();
@@ -76,7 +95,16 @@ export function linkUrl(): string {
   return 'ws://127.0.0.1:47800/camera';
 }
 
+/**
+ * True in a window that is not the working Lumen window (another one holds the lock, or took over).
+ * Such a window must stay off the camera: two windows on the link is how photos get misfiled.
+ */
+function isSecondary(s: unknown = useApp.getState()): boolean {
+  return !!(s as { secondary?: boolean }).secondary;
+}
+
 export function startLink(): void {
+  if (isSecondary()) return;
   wanted = true;
   connect();
 }
@@ -84,8 +112,7 @@ export function startLink(): void {
 export function stopLink(): void {
   wanted = false;
   window.clearTimeout(retry);
-  ws?.close();
-  ws = null;
+  dropSocket('The link to Lumen Camera Link was switched off.');
   useCanon.setState({ link: 'off', liveView: false });
 }
 
@@ -96,8 +123,7 @@ export function reconnectLink(): void {
     void request('reconnect').catch(() => undefined);
     return;
   }
-  ws?.close();
-  ws = null;
+  dropSocket('The link to Lumen Camera Link was restarted.');
   retryDelay = 1000;
   window.clearTimeout(retry);
   connect();
@@ -118,7 +144,7 @@ function connect() {
   sock.onopen = () => {
     retryDelay = 1000;
     useCanon.setState({ link: 'online' });
-    send({ type: 'active' });
+    reportActive();
     if (wantLiveView) void request('liveview', { on: true }).catch(() => undefined);
   };
   sock.onmessage = (e) => {
@@ -126,13 +152,9 @@ function connect() {
     else onBinary(e.data as ArrayBuffer);
   };
   sock.onclose = () => {
+    settleRequests(sock, 'Lumen Camera Link is not running.');
     if (ws !== sock) return; // an older socket closing late must not disturb the current one
     ws = null;
-    for (const [, p] of pending) {
-      window.clearTimeout(p.timer);
-      p.reject(new Error('Lumen Camera Link is not running.'));
-    }
-    pending.clear();
     useCanon.setState({ link: wanted ? 'offline' : 'off', camera: null, props: {}, liveView: false });
     scheduleRetry();
   };
@@ -151,7 +173,8 @@ function send(msg: Record<string, unknown>) {
 
 function request(type: string, payload: Record<string, unknown> = {}, timeoutMs = 10_000): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
-    if (ws?.readyState !== WebSocket.OPEN) {
+    const sock = ws;
+    if (sock?.readyState !== WebSocket.OPEN) {
       reject(new Error('Lumen Camera Link is not running.'));
       return;
     }
@@ -160,14 +183,28 @@ function request(type: string, payload: Record<string, unknown> = {}, timeoutMs 
       pending.delete(id);
       reject(new Error('The camera did not respond.'));
     }, timeoutMs);
-    pending.set(id, { resolve, reject, timer });
-    send({ type, id, ...payload });
+    pending.set(id, { resolve, reject, timer, sock });
+    sock.send(JSON.stringify({ type, id, ...payload }));
   });
 }
 
-// Let the helper know which open Lumen window should receive photos.
+// Photos taken with the camera's own button go to the Lumen window that was looked at last, so each
+// window tells the helper whether it is on screen, whether it is in front, and when it last came forward.
+// A window restored in the background says so too, and so never takes photos from the one in use.
+let lastForwardAt = typeof document !== 'undefined' && document.visibilityState === 'visible' ? Date.now() : 0;
+
+function reportActive(cameForward = false): void {
+  if (typeof document === 'undefined') return;
+  const visible = document.visibilityState === 'visible';
+  if (cameForward && visible) lastForwardAt = Date.now();
+  // acks: this build confirms each photo it receives (see onBinary).
+  send({ type: 'active', visible, focused: document.hasFocus(), at: lastForwardAt, acks: true });
+}
+
 if (typeof window !== 'undefined') {
-  window.addEventListener('focus', () => send({ type: 'active' }));
+  window.addEventListener('focus', () => reportActive(true));
+  window.addEventListener('blur', () => reportActive());
+  document.addEventListener('visibilitychange', () => reportActive(document.visibilityState === 'visible'));
 }
 
 /* ───────── incoming ───────── */
@@ -210,10 +247,15 @@ function onText(msg: Record<string, unknown>) {
     }
     case 'capture-failed': {
       const id = msg.requestId as string | undefined;
+      if (id && arrived.has(id)) break; // its photo is already filed: nothing failed
       if (id) retireCapture(id);
       toast({ tone: 'error', message: 'Photo not taken', detail: msg.message as string });
       break;
     }
+    case 'incoming':
+      // The camera's own button was pressed; the photo follows in a moment.
+      if (typeof msg.name === 'string') noteBodyShot(msg.name);
+      break;
     case 'notice':
       toast({ tone: (msg.tone as 'warning') ?? 'default', message: msg.message as string, detail: msg.detail as string | undefined, duration: 12000 });
       break;
@@ -251,7 +293,10 @@ function onBinary(buf: ArrayBuffer) {
   if (bytes[0] === 2) {
     const view = new DataView(buf);
     const headerLen = view.getUint32(1);
-    const header = JSON.parse(new TextDecoder().decode(bytes.subarray(5, 5 + headerLen)));
+    const header = JSON.parse(new TextDecoder().decode(bytes.subarray(5, 5 + headerLen))) as PhotoHeader;
+    // Tell the helper straight away that the photo is here. Without this it saves its own copy
+    // to the Unfiled folder, so that a window which has frozen or closed never costs a photo.
+    if (header.photoId) send({ type: 'photo-ack', photoId: header.photoId });
     const data = bytes.subarray(5 + headerLen);
     void onPhoto(header, new Blob([data], { type: 'image/jpeg' }));
   }
@@ -270,6 +315,9 @@ const captures = new Map<string, Snapshot>();
 const lateCaptures = new Map<string, Snapshot & { failedAt: number }>();
 const LATE_GRACE_MS = 90_000;
 
+/** Captures whose photo has arrived, so a late "it failed" for one of them is not shown. */
+const arrived = new Set<string>();
+
 function retireCapture(id: string): void {
   const snap = captures.get(id);
   if (!snap) return;
@@ -278,7 +326,36 @@ function retireCapture(id: string): void {
   for (const [k, v] of lateCaptures) if (Date.now() - v.failedAt > LATE_GRACE_MS) lateCaptures.delete(k);
 }
 
+/**
+ * Photos taken with the camera's own button (or the slit lamp's release). The helper says one is
+ * coming as soon as the camera reports it, about a second before the file itself arrives. What is
+ * selected is noted then, so pressing L or moving to the next patient straight after the button
+ * doesn't mislabel the photo. `snap` is null when no patient was selected at that moment.
+ */
+const bodyShots = new Map<string, { snap: Snapshot | null; at: number }>();
+const BODY_SHOT_KEEP_MS = 120_000;
+/** IMG_0001 for IMG_0001.JPG and IMG_0001.CR2: the two files of one shot share it. */
+const shotKey = (name: string) => name.replace(/\.[^.]*$/, '').toUpperCase();
+
+function noteBodyShot(name: string): void {
+  const now = Date.now();
+  for (const [k, v] of bodyShots) if (now - v.at > BODY_SHOT_KEEP_MS) bodyShots.delete(k);
+  const key = shotKey(name);
+  if (bodyShots.has(key)) return; // the first word of a shot is the closest to the moment it was taken
+  const s = useApp.getState();
+  bodyShots.set(key, { snap: s.patient ? { patient: s.patient, eye: s.eye, technique: s.technique, diagnoses: s.diagnoses } : null, at: now });
+}
+
+function takeBodyShot(name: string): { snap: Snapshot | null } | undefined {
+  const key = shotKey(name);
+  const noted = bodyShots.get(key);
+  bodyShots.delete(key);
+  return noted && Date.now() - noted.at <= BODY_SHOT_KEEP_MS ? noted : undefined;
+}
+
 interface PhotoHeader {
+  /** Identifies this delivery to the helper, which waits for it to be confirmed. */
+  photoId?: string;
   requestId?: string;
   name: string;
   takenAt: number;
@@ -291,38 +368,61 @@ function deviceLabel(): string {
 
 async function onPhoto(h: PhotoHeader, blob: Blob) {
   const file = new File([blob], h.name, { type: 'image/jpeg', lastModified: h.takenAt });
+  const label = deviceLabel();
+  // If a photo can't be filed (no patient, or storing it failed) it waits in the banner rather than vanish.
+  const held = { file, receivedAt: Date.now(), source: 'canon' as const, deviceLabel: label, exposure: h.exposure };
   const snap = h.requestId ? captures.get(h.requestId) : undefined;
   const late = !snap && h.requestId ? lateCaptures.get(h.requestId) : undefined;
   if (h.requestId) {
     captures.delete(h.requestId);
     lateCaptures.delete(h.requestId);
+    arrived.add(h.requestId);
+    if (arrived.size > 100) arrived.delete(arrived.values().next().value as string);
   }
-  const label = deviceLabel();
-  const filed = snap ?? late;
-  if (filed) {
-    // Taken from Lumen: file it exactly as it was labelled at the moment of the shutter press.
-    await ingest(
-      {
-        original: file,
-        source: 'canon',
-        deviceLabel: label,
-        transform: transformFor(label),
-        takenAt: h.takenAt,
-        eye: filed.eye,
-        technique: filed.technique,
-        // If the patient is still on screen, use their labels as they are now; otherwise as they were at the press.
-        diagnoses: useApp.getState().activePatientId === filed.patient.id ? undefined : filed.diagnoses,
-        exposure: h.exposure,
-      },
-      filed.patient,
-    );
-    if (late) toast({ tone: 'success', message: 'The photo arrived after all', detail: `Filed to ${displayName(late.patient)}, ${late.eye}.`, duration: 7000 });
+  // Taken with the camera's own shutter button or remote: what was selected when the camera reported it.
+  const noted = h.requestId ? undefined : takeBodyShot(h.name);
+  const filed = snap ?? late ?? noted?.snap ?? undefined;
+  const fromButton = !snap && !late;
+  if (fromButton && noted && !filed) {
+    // Nobody was selected when it was taken: it waits for a patient, even if one has been chosen since.
+    holdPhoto(held);
     return;
   }
-  // Taken with the camera's own shutter button or remote.
-  const held = { file, receivedAt: Date.now(), source: 'canon' as const, deviceLabel: label, exposure: h.exposure };
-  if (!useApp.getState().patient) holdPhoto(held);
-  else await fileHeldPhoto(held);
+  if (fromButton && !filed && !useApp.getState().patient) {
+    holdPhoto(held);
+    return;
+  }
+  if (fromButton) {
+    // Lumen's own shutter has already flashed and clicked; this is the first sign of a photo from the camera.
+    if (useApp.getState().settings.shutterSound) playShutter();
+    useApp.setState((st) => ({ flashTick: st.flashTick + 1 }));
+  }
+  // With labels noted at the press (from Lumen or the camera), file it exactly as it was labelled then;
+  // an older helper sends no notice for the camera's button, and the photo takes the current selection.
+  const saved = await ingest(
+    {
+      original: file,
+      source: 'canon',
+      deviceLabel: label,
+      transform: transformFor(label),
+      takenAt: h.takenAt,
+      ...(filed
+        ? {
+            eye: filed.eye,
+            technique: filed.technique,
+            // If the patient is still on screen, use their labels as they are now; otherwise as they were at the press.
+            diagnoses: useApp.getState().activePatientId === filed.patient.id ? undefined : filed.diagnoses,
+          }
+        : {}),
+      exposure: h.exposure,
+    },
+    filed?.patient,
+  );
+  if (!saved) {
+    holdPhoto(held);
+    return;
+  }
+  if (late) toast({ tone: 'success', message: 'The photo arrived after all', detail: `Filed to ${displayName(late.patient)}, ${late.eye}.`, duration: 7000 });
 }
 
 export function canonReady(): boolean {
@@ -352,6 +452,8 @@ export async function canonShutter(): Promise<void> {
   try {
     await request('capture', { captureId: id }, 15_000);
   } catch (e) {
+    // The reply can be lost (the link restarted, the helper was slow) although the photo was taken and filed.
+    if (arrived.has(id)) return;
     retireCapture(id);
     toast({ tone: 'error', message: 'Photo not taken', detail: (e as Error).message });
   }
@@ -433,10 +535,13 @@ export function chooseTechnique(id: string | null): void {
 
 /* ───────── keep the link in step with the chosen source ───────── */
 
-let lastSource: string | undefined;
+let lastWanted: boolean | undefined;
 useApp.subscribe((s) => {
-  if (s.settings.source === lastSource || !s.ready) return;
-  lastSource = s.settings.source;
-  if (s.settings.source === 'canon') startLink();
+  if (!s.ready) return;
+  // Only the working window talks to the camera; one that becomes secondary lets go of the link.
+  const want = s.settings.source === 'canon' && !isSecondary(s);
+  if (want === lastWanted) return;
+  lastWanted = want;
+  if (want) startLink();
   else stopLink();
 });
