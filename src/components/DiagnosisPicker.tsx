@@ -69,7 +69,11 @@ export function DiagnosisPicker({
   useEffect(() => {
     if (!open || !field.current) return;
     const r = field.current.getBoundingClientRect();
-    setUp(window.innerHeight - r.bottom < 280 && r.top > 280);
+    // The list is clipped by whichever panel scrolls it, so measure the room inside that panel.
+    const panel = field.current.closest('.insp-scroll, .viewer-info')?.getBoundingClientRect();
+    const below = (panel?.bottom ?? window.innerHeight) - r.bottom;
+    const above = r.top - (panel?.top ?? 0);
+    setUp(below < 280 && above > below);
   }, [open]);
   useEffect(() => {
     list.current?.querySelector('.is-hi')?.scrollIntoView({ block: 'nearest' });

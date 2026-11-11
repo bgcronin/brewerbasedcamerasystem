@@ -1,6 +1,7 @@
 import { useEffect, useRef, type ButtonHTMLAttributes, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { initials } from '../lib/names';
+import { useBackgroundInert } from '../lib/overlay';
 import { useThumb } from '../lib/thumbs';
 import type { Eye, Patient } from '../lib/types';
 import { Icon, type IconName } from './Icon';
@@ -141,6 +142,7 @@ export function Modal({
   className?: string;
 }) {
   const panel = useRef<HTMLDivElement>(null);
+  useBackgroundInert(open);
   useEffect(() => {
     if (!open) return;
     const prev = document.activeElement as HTMLElement | null;

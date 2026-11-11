@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { formatClock, formatShortDate } from '../lib/dates';
 import { displayName } from '../lib/names';
+import { useOverlayFocus } from '../lib/overlay';
 import { useFullImageFor } from '../lib/thumbs';
 import { techniqueLabel, type Capture } from '../lib/types';
 import { closeCompare, useApp } from '../state/store';
@@ -46,6 +47,8 @@ export function CompareView() {
   const [a, setA] = useState<ZoomState>(ZOOM_FIT);
   const [b, setB] = useState<ZoomState>(ZOOM_FIT);
   const [swapped, setSwapped] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  useOverlayFocus(!!pair, root);
 
   useEffect(() => {
     setA(ZOOM_FIT);
@@ -76,13 +79,16 @@ export function CompareView() {
   const setRight = (v: ZoomState) => (sync ? (setA(v), setB(v)) : setB(v));
 
   return createPortal(
-    <div className="viewer compare" role="dialog" aria-modal="true" aria-label="Compare photos">
+    <div ref={root} tabIndex={-1} className="viewer compare" role="dialog" aria-modal="true" aria-label="Compare photos">
       <header className="viewer-bar">
         <IconButton icon="chevronLeft" label="Back (Esc)" onClick={closeCompare} />
         <div className="viewer-title">
           <div>
             <strong>Compare</strong>
-            <span>{patient ? displayName(patient) : ''}</span>
+            <span>
+              {patient ? displayName(patient) : ''}
+              {patient?.mrn && <span className="mrn">{patient.mrn}</span>}
+            </span>
           </div>
         </div>
         <div className="viewer-actions">

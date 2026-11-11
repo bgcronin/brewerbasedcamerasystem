@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ANNOTATION_COLORS, annotatedName, metrics, renderAnnotated, type AnnotationTool } from '../lib/annotations';
 import { formatClock, formatShortDate } from '../lib/dates';
@@ -7,6 +7,7 @@ import { addDiagnosis, sameDiagnosis } from '../lib/diagnoses';
 import { uid } from '../lib/id';
 import { displayName } from '../lib/names';
 import { formatBytes, formatLabel, megapixels } from '../lib/naming';
+import { useOverlayFocus } from '../lib/overlay';
 import { useFullImageFor } from '../lib/thumbs';
 import { downloadBlob } from '../lib/zip';
 import { TECHNIQUES, techniqueLabel, type Annotation, type Capture, type Eye, type ImageFormat } from '../lib/types';
@@ -27,6 +28,16 @@ const TOOLS: { tool: AnnotationTool; icon: IconName; label: string }[] = [
 
 /** How many thumbnails to keep either side of the current photo in the strip. */
 const STRIP_REACH = 30;
+
+/** A path that may wrap after "/" or "_", never in the middle of a word or the file extension. */
+function breakable(path: string) {
+  return path.split(/(?<=[/_])/).map((part, i) => (
+    <Fragment key={i}>
+      {part}
+      <wbr />
+    </Fragment>
+  ));
+}
 
 /** Space, or any key the foot switch is set to send. */
 function isPedal(e: KeyboardEvent): boolean {
@@ -68,6 +79,7 @@ export function Lightbox() {
   const [spaceHeld, setSpaceHeld] = useState(false);
   const [textAt, setTextAt] = useState<{ x: number; y: number; clientX: number; clientY: number; scale: number } | null>(null);
   const [text, setText] = useState('');
+  const root = useRef<HTMLDivElement>(null);
   const history = useRef<Annotation[][]>([]);
   const [undoable, setUndoable] = useState(0);
   const textCancelled = useRef(false);
@@ -84,6 +96,8 @@ export function Lightbox() {
   useEffect(() => {
     if (lb && ids.length === 0) closeLightbox();
   }, [lb, ids.length]);
+
+  useOverlayFocus(!!lb && !!c, root);
 
   useEffect(() => {
     if (!lb) {
@@ -215,7 +229,7 @@ export function Lightbox() {
   const strip = ids.slice(from, index + STRIP_REACH + 1);
 
   return createPortal(
-    <div className={cx('viewer', annotating && 'is-annotating')} role="dialog" aria-modal="true" aria-label="Photo viewer">
+    <div ref={root} tabIndex={-1} className={cx('viewer', annotating && 'is-annotating')} role="dialog" aria-modal="true" aria-label="Photo viewer">
       {annotating ? (
         <header className="viewer-bar anno-bar" role="toolbar" aria-label="Annotation tools">
           <div className="anno-group">
@@ -274,7 +288,10 @@ export function Lightbox() {
           <div className="viewer-title">
             <EyeTag eye={c.eye} size="md" />
             <div>
-              <strong>{patient ? displayName(patient) : ''}</strong>
+              <strong>
+                {patient ? displayName(patient) : ''}
+                {patient?.mrn && <span className="mrn">{patient.mrn}</span>}
+              </strong>
               <span className="meta-row">
                 <span>{formatShortDate(c.date)}</span>
                 <span>{formatClock(c.takenAt)}</span>
@@ -302,7 +319,15 @@ export function Lightbox() {
               label={marks.length && marksVisible ? 'Download with marks' : 'Download'}
               onClick={() => void download(marksVisible)}
             />
-            <IconButton icon="trash" label="Delete (Del)" onClick={() => deleteCapture(c.id)} />
+            <IconButton
+              icon="trash"
+              label="Delete (Del)"
+              onClick={(e) => {
+                deleteCapture(c.id);
+                // The button stays on screen for the next photo: never leave it armed for Enter.
+                e.currentTarget.blur();
+              }}
+            />
             <IconButton icon="info" label="Details (I)" active={info} onClick={() => setInfo((v) => !v)} />
           </div>
         </header>
@@ -446,7 +471,7 @@ export function Lightbox() {
               </div>
               <div>
                 <dt>Archive</dt>
-                <dd className={cx(!c.archivedPath && 'muted')}>{c.archivedPath ?? 'Not yet written to disk'}</dd>
+                <dd className={cx(!c.archivedPath && 'muted')}>{c.archivedPath ? breakable(c.archivedPath) : 'Not yet written to disk'}</dd>
               </div>
             </dl>
             <div className="viewer-downloads">

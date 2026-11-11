@@ -90,7 +90,7 @@ function PatientCard() {
         {visit?.reason && (
           <div className="pcard-wide">
             <dt>Reason</dt>
-            <dd>{visit.reason}</dd>
+            <dd title={visit.reason}>{visit.reason}</dd>
           </div>
         )}
       </dl>
@@ -355,30 +355,31 @@ export function Inspector() {
   const isCanon = useApp((s) => s.settings.source === 'canon');
   return (
     <aside className="inspector" aria-label="Capture controls">
-      <PatientCard />
-      <section className="insp-section">
-        <h3 className="insp-title">
-          Eye
-          <span className="insp-keys">
-            <Kbd>R</Kbd>
-            <Kbd>B</Kbd>
-            <Kbd>L</Kbd>
-          </span>
-        </h3>
-        <EyePicker />
-      </section>
-      <section className="insp-section">
-        <h3 className="insp-title">
-          Illumination
-          <span className="insp-keys">
-            <Kbd>1–8</Kbd>
-          </span>
-        </h3>
-        <TechniqueGrid />
-      </section>
-      <DiagnosisSection />
-      {isCanon && <CameraPanel />}
-      <div className="flex-1" />
+      <div className="insp-scroll">
+        <PatientCard />
+        <section className="insp-section">
+          <h3 className="insp-title">
+            Eye
+            <span className="insp-keys">
+              <Kbd>R</Kbd>
+              <Kbd>B</Kbd>
+              <Kbd>L</Kbd>
+            </span>
+          </h3>
+          <EyePicker />
+        </section>
+        <section className="insp-section">
+          <h3 className="insp-title">
+            Illumination
+            <span className="insp-keys">
+              <Kbd>1–8</Kbd>
+            </span>
+          </h3>
+          <TechniqueGrid />
+        </section>
+        <DiagnosisSection />
+        {isCanon && <CameraPanel />}
+      </div>
       <ShutterArea />
       <div className="insp-foot">
         <Button variant="ghost" size="sm" icon="import" onClick={() => document.getElementById('add-photos-input')?.click()}>

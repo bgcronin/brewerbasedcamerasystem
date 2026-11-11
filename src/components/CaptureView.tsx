@@ -324,7 +324,7 @@ function HeldBanner() {
         {held.length} photo{held.length === 1 ? '' : 's'} waiting for a patient
       </span>
       {patient ? (
-        <Button size="sm" variant="primary" onClick={() => void fileHeldPhotos()}>
+        <Button size="sm" variant="primary" className="held-file" title={`File to ${displayName(patient)}`} onClick={() => void fileHeldPhotos()}>
           File to {displayName(patient)}
         </Button>
       ) : (

@@ -142,10 +142,12 @@ img {
   --hairline-2: rgba(150, 185, 235, 0.13);
   --hairline-3: rgba(150, 185, 235, 0.22);
   --text: #eef2f8;
-  --text-2: #8e9ab0;
-  --text-3: #5b6678;
+  --text-2: #9ca8bd;
+  --text-3: #7b879c;
   --accent: #3f86ff;
   --accent-hi: #6ea4ff;
+  --accent-solid: #2a6cf0;
+  --accent-solid-hover: #1f63e6;
   --accent-soft: rgba(63, 134, 255, 0.16);
   --accent-softer: rgba(63, 134, 255, 0.09);
   --accent-line: rgba(63, 134, 255, 0.42);
@@ -191,7 +193,7 @@ img {
   text-overflow: ellipsis;
 }
 .btn-sm {
-  height: 28px;
+  height: 30px;
   padding: 0 10px;
   border-radius: var(--r-sm);
   font-size: var(--fs-sm);
@@ -209,11 +211,11 @@ img {
 }
 
 .btn-primary {
-  background: var(--accent);
+  background: var(--accent-solid);
   color: var(--text-on-accent);
 }
 .btn-primary:hover:not(:disabled) {
-  background: var(--accent-hi);
+  background: var(--accent-solid-hover);
 }
 
 .btn-secondary {
@@ -364,8 +366,18 @@ img {
 :root:not([data-theme='dark']) .switch {
   background: #d9dfe8;
 }
+/* Always-dark surfaces keep a dark track whatever the theme. */
+.viewer .switch,
+.stage .switch,
+.force-dark .switch {
+  background: #262e3b;
+}
+:root[data-theme='dark'] .switch {
+  box-shadow: inset 0 0 0 1px var(--hairline-3);
+}
 .switch.is-on {
-  background: var(--accent) !important;
+  background: var(--accent-solid) !important;
+  box-shadow: none;
 }
 .switch-knob {
   position: absolute;
@@ -409,7 +421,7 @@ img {
 .select:focus,
 .textarea:focus {
   box-shadow:
-    inset 0 0 0 1px var(--accent-line),
+    inset 0 0 0 1.5px var(--accent),
     var(--accent-glow);
 }
 .input-sm,
@@ -464,9 +476,6 @@ input[type='time'] {
 ::-webkit-calendar-picker-indicator {
   opacity: 0.55;
   cursor: pointer;
-}
-:root[data-theme='dark'] ::-webkit-calendar-picker-indicator {
-  filter: invert(0.85);
 }
 
 .field {
@@ -559,6 +568,17 @@ input[type='time'] {
   }
   100% {
     transform: scale(1.6);
+    opacity: 0;
+  }
+}
+/* A gentler ring for places with text close by. */
+@keyframes ready-pulse {
+  0% {
+    transform: scale(0.92);
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(1.18);
     opacity: 0;
   }
 }
@@ -681,7 +701,7 @@ input[type='time'] {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 14px 20px 18px 24px;
+  padding: 14px 24px 18px;
   border-top: 1px solid var(--hairline);
   flex-shrink: 0;
 }

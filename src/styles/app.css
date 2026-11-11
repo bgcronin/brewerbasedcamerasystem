@@ -29,7 +29,7 @@
 .topbar {
   grid-column: 1 / -1;
   display: grid;
-  grid-template-columns: var(--sidebar-w) 1fr auto;
+  grid-template-columns: minmax(var(--sidebar-w), max-content) 1fr auto;
   align-items: center;
   gap: 16px;
   padding-right: 12px;
@@ -44,6 +44,7 @@
   gap: 10px;
   padding-left: 18px;
   min-width: 0;
+  max-width: 36vw;
 }
 .brand-name {
   font-family: var(--font-display);
@@ -782,10 +783,12 @@
 }
 .held-banner {
   position: absolute;
-  top: 14px;
+  /* Below the row that carries the OD / OS cue, which must never be covered. */
+  top: 72px;
   left: 50%;
   transform: translateX(-50%);
   z-index: 5;
+  max-width: calc(100% - 28px);
   display: flex;
   align-items: center;
   gap: 10px;
@@ -800,6 +803,14 @@
   font-weight: 500;
   white-space: nowrap;
   animation: toast-in 360ms var(--spring) both;
+}
+.held-banner > span,
+.held-banner .btn-ghost {
+  flex-shrink: 0;
+}
+.held-file {
+  min-width: 0;
+  flex-shrink: 1;
 }
 .held-hint {
   color: rgba(255, 217, 160, 0.7);
@@ -867,6 +878,15 @@
   overflow-y: hidden;
   padding: 2px;
   scroll-snap-type: x proximity;
+  /* The strip scrolls by wheel, drag or keyboard; a scrollbar here would cover the thumbnails on Windows. */
+  scrollbar-width: none;
+}
+.film-track::-webkit-scrollbar {
+  display: none;
+}
+.film-open:focus-visible {
+  outline-offset: -3px;
+  border-radius: var(--r);
 }
 .film-empty {
   flex: 1;
@@ -1024,12 +1044,21 @@
 .inspector {
   display: flex;
   flex-direction: column;
-  gap: 20px;
   min-height: 0;
-  overflow-y: auto;
-  padding: 18px 16px 12px;
+  overflow: hidden;
   background: var(--surface);
   border-left: 1px solid var(--hairline);
+}
+/* Everything that can grow scrolls here; the shutter and footer below it are never covered and never cover. */
+.insp-scroll {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 18px 16px 14px;
 }
 .pcard {
   display: flex;
@@ -1091,6 +1120,17 @@
 }
 .pcard-wide {
   grid-column: 1 / -1;
+}
+/* A long reason is clamped to two lines (the full text is in its tooltip). */
+.pcard-wide dd {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.pcard-grid dd.meta-row > * {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .pcard-history {
   display: flex;
@@ -1215,12 +1255,12 @@
   font-size: 20px;
   font-weight: 700;
   letter-spacing: 0.01em;
-  color: var(--text-3);
+  color: var(--text-2);
   transition: color var(--t) ease;
 }
 .eye-opt-label {
   font-size: var(--fs-xs);
-  color: var(--text-3);
+  color: var(--text-2);
 }
 .eye-opt.is-on {
   background: var(--surface);
@@ -1290,8 +1330,8 @@
 }
 .tech-preset {
   position: absolute;
-  top: 6px;
-  right: 6px;
+  top: 4px;
+  right: 4px;
   width: 5px;
   height: 5px;
   border-radius: 50%;
@@ -1435,11 +1475,8 @@ button.cam-preset:hover {
   flex-direction: column;
   align-items: center;
   gap: 12px;
-  padding: 10px 0 4px;
-  position: sticky;
-  bottom: 44px;
-  background: var(--surface);
-  z-index: 1;
+  padding: 12px 16px 6px;
+  flex-shrink: 0;
 }
 .shutter {
   position: relative;
@@ -1564,17 +1601,13 @@ button.cam-preset:hover {
   inset: -6px;
   border-radius: 50%;
   border: 1.5px solid var(--eye);
-  animation: live-pulse 2.4s var(--ease-out) infinite;
+  animation: ready-pulse 2.4s var(--ease-out) infinite;
 }
 .insp-foot {
   display: flex;
   justify-content: center;
-  margin-top: -6px;
-  position: sticky;
-  bottom: 0;
-  padding-bottom: 2px;
-  background: var(--surface);
-  z-index: 1;
+  flex-shrink: 0;
+  padding: 0 16px 10px;
 }
 
 /* ───────── Review ───────── */
@@ -1762,7 +1795,7 @@ button.cam-preset:hover {
 .tile-check {
   position: absolute;
   right: 8px;
-  bottom: 8px;
+  top: 7px;
   display: grid;
   place-items: center;
   width: 22px;
@@ -1771,6 +1804,9 @@ button.cam-preset:hover {
   border: 1.5px solid rgba(255, 255, 255, 0.85);
   background: rgba(0, 0, 0, 0.35);
   color: #fff;
+}
+.tile.is-selecting .tile-badges {
+  visibility: hidden;
 }
 .tile.is-selected .tile-check {
   background: var(--accent);
@@ -1837,10 +1873,9 @@ button.cam-preset:hover {
   z-index: 90;
   display: flex;
   flex-direction: column;
-  background: rgba(4, 6, 10, 0.97);
-  -webkit-backdrop-filter: blur(20px);
-  backdrop-filter: blur(20px);
+  background: #04060a;
   color: var(--text);
+  outline: none;
   animation: fade-in 200ms ease both;
 }
 .viewer-bar {
@@ -1962,11 +1997,26 @@ button.cam-preset:hover {
   margin: 2px 0 0;
   font-size: var(--fs-sm);
   font-variant-numeric: tabular-nums;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 .viewer-info .btn {
   justify-content: flex-start;
   max-width: 100%;
+  height: auto;
+  min-height: 30px;
+  padding-top: 5px;
+  padding-bottom: 5px;
+  text-align: left;
+}
+.viewer-info .btn > span {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.viewer-title .mrn {
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  margin-left: 8px;
 }
 .viewer-strip {
   display: flex;
@@ -2394,6 +2444,15 @@ button.cam-preset:hover {
 .set-row-control .input {
   width: 180px;
 }
+/* A control that needs the full width (an address) sits under its label. */
+.set-row-wide {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+.set-row-wide .set-row-control .input {
+  width: 100%;
+}
 .set-value {
   font-size: var(--fs);
   font-variant-numeric: tabular-nums;
@@ -2676,8 +2735,9 @@ button.cam-preset:hover {
   }
 }
 @media (max-height: 860px) {
-  .inspector {
+  .insp-scroll {
     gap: 10px;
+    padding-bottom: 8px;
   }
   .eye-opt {
     height: 50px;
@@ -2700,7 +2760,14 @@ button.cam-preset:hover {
     flex-direction: row;
     justify-content: center;
     gap: 14px;
-    padding: 6px 0 2px;
+    padding: 8px 16px 4px;
+  }
+  .viewer-info {
+    gap: 12px;
+    padding: 14px 16px;
+  }
+  .source-section + .source-section {
+    margin-top: -6px;
   }
   .shutter-caption {
     align-items: flex-start;
@@ -2715,7 +2782,7 @@ button.cam-preset:hover {
   }
 }
 @media (max-height: 740px) {
-  .inspector {
+  .insp-scroll {
     padding-top: 12px;
   }
   .eye-opt {
@@ -2749,15 +2816,24 @@ button.cam-preset:hover {
     grid-column: 1 / -1;
     flex-direction: row;
     flex-wrap: wrap;
+    align-items: center;
+    overflow-y: auto;
     border-left: 0;
     border-top: 1px solid var(--hairline);
     max-height: 40vh;
   }
-  .inspector > * {
+  .insp-scroll {
+    flex: 1 1 100%;
+    flex-direction: row;
+    flex-wrap: wrap;
+    overflow: visible;
+  }
+  .insp-scroll > * {
     flex: 1 1 240px;
   }
-  .inspector > .flex-1 {
-    display: none;
+  .shutter-area,
+  .insp-foot {
+    flex: 1 1 240px;
   }
   .keys-grid {
     grid-template-columns: 1fr 1fr;
@@ -2906,7 +2982,7 @@ button.cam-preset:hover {
   background: var(--surface-3);
 }
 .dx-chip-btn.is-on {
-  background: var(--accent);
+  background: var(--accent-solid);
   color: var(--text-on-accent);
 }
 .dx-chip-count {
@@ -2954,7 +3030,7 @@ button.cam-preset:hover {
   cursor: pointer;
 }
 .dx-option.is-hi {
-  background: var(--accent);
+  background: var(--accent-solid);
   color: var(--text-on-accent);
 }
 .dx-quick {
@@ -3291,13 +3367,13 @@ button.cam-preset:hover {
   height: 32px;
   padding: 0 18px;
   border-radius: 8px;
-  background: var(--accent);
+  background: var(--accent-solid);
   color: #fff;
   font-size: var(--fs-sm);
   font-weight: 600;
 }
 .anno-done:hover {
-  background: var(--accent-hi);
+  background: var(--accent-solid-hover);
 }
 .anno-hint {
   flex: 1;

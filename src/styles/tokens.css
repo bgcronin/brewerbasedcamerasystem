@@ -67,25 +67,30 @@
   --hairline-3: rgba(14, 23, 38, 0.18);
   --highlight: rgba(255, 255, 255, 0.9);
 
+  /* Secondary and tertiary text both clear 4.5:1 on white: tertiary text here still carries
+     real information (times, field labels), and the room is often dim. */
   --text: #0e1726;
-  --text-2: #66728a;
-  --text-3: #9aa4b5;
+  --text-2: #515d75;
+  --text-3: #6b7689;
   --text-on-accent: #ffffff;
 
   --accent: #0a5cff;
   --accent-hi: #3b7dff;
   --accent-lo: #0047d6;
+  /* Fills that carry white text. */
+  --accent-solid: #0a5cff;
+  --accent-solid-hover: #0047d6;
   --accent-soft: rgba(10, 92, 255, 0.1);
   --accent-softer: rgba(10, 92, 255, 0.06);
   --accent-line: rgba(10, 92, 255, 0.35);
   --accent-glow: 0 0 0 3px rgba(10, 92, 255, 0.18);
 
-  --od: #0a7acc;
-  --od-soft: rgba(10, 122, 204, 0.1);
+  --od: #0a6bb3;
+  --od-soft: rgba(10, 107, 179, 0.1);
   --os: #6f4fe0;
   --os-soft: rgba(111, 79, 224, 0.1);
-  --ou: #0e9c8a;
-  --ou-soft: rgba(14, 156, 138, 0.1);
+  --ou: #0a7a6c;
+  --ou-soft: rgba(10, 122, 108, 0.1);
 
   --success: #15935f;
   --success-soft: rgba(21, 147, 95, 0.1);
@@ -121,13 +126,15 @@
   --highlight: rgba(255, 255, 255, 0.05);
 
   --text: #eef2f8;
-  --text-2: #8e9ab0;
-  --text-3: #5b6678;
+  --text-2: #9ca8bd;
+  --text-3: #7b879c;
   --text-on-accent: #fff;
 
   --accent: #3f86ff;
   --accent-hi: #6ea4ff;
   --accent-lo: #1f63e6;
+  --accent-solid: #2a6cf0;
+  --accent-solid-hover: #1f63e6;
   --accent-soft: rgba(63, 134, 255, 0.16);
   --accent-softer: rgba(63, 134, 255, 0.09);
   --accent-line: rgba(63, 134, 255, 0.42);

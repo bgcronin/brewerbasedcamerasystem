@@ -22,9 +22,9 @@ function keyLabel(code: string): string {
   return code.replace(/^Numpad/, 'Num ').replace(/^Arrow/, '');
 }
 
-function Row({ title, detail, children }: { title: string; detail?: React.ReactNode; children: React.ReactNode }) {
+function Row({ title, detail, children, wide }: { title: string; detail?: React.ReactNode; children: React.ReactNode; wide?: boolean }) {
   return (
-    <div className="set-row">
+    <div className={wide ? 'set-row set-row-wide' : 'set-row'}>
       <div className="set-row-text">
         <span className="set-row-title">{title}</span>
         {detail && <span className="set-row-detail">{detail}</span>}
@@ -247,7 +247,7 @@ export function SettingsSheet() {
                 </Row>
               ))
             )}
-            <Row title="Camera Link address" detail="Leave blank unless Camera Link runs on a different port.">
+            <Row wide title="Camera Link address" detail="Leave blank unless Camera Link runs on a different port.">
               <input
                 className="input input-sm"
                 value={linkUrl}
