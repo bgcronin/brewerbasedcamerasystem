@@ -112,6 +112,23 @@ export class SimulatorBackend extends EventEmitter {
     }, 350);
   }
 
+  /**
+   * Pretend someone pressed the camera's own shutter button, or the slit lamp's remote release.
+   * Like the real camera, it says at once that a photo is coming and hands the file over a little later.
+   */
+  pressButton(delayMs = 350) {
+    if (this.state.state !== 'connected') return false;
+    const exposure = { iso: this.values.iso, tv: this.values.tv, av: this.values.av, wb: this.values.wb, mode: this.values.mode };
+    const name = `IMG_${String(this.counter++).padStart(4, '0')}.JPG`;
+    this.emit('incoming', { name });
+    setTimeout(() => {
+      this.log(`photo ${name} from the (simulated) camera’s own shutter button`);
+      // No requestId: Lumen did not ask for this one.
+      this.emit('photo', { name, data: this.photo, takenAt: Date.now(), exposure });
+    }, delayMs);
+    return true;
+  }
+
   reconnect() {
     this.start();
   }
