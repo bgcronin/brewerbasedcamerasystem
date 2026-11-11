@@ -642,7 +642,15 @@ async function afterArchived(written: Capture, path: string): Promise<void> {
     void processArchiveRemovals();
     return;
   }
-  if (stored.deletedAt) return; // inside its undo window; if the delete stands, the file is removed then
+  if (stored.deletedAt) {
+    // Deleted while the file was being written. Inside the undo period the file is dealt with
+    // when the delete is made final; if that is already under way, it is queued here.
+    if (!pendingDeletes.has(written.id)) {
+      await queueRemoval(path);
+      void processArchiveRemovals();
+    }
+    return;
+  }
   if (archiveMeta(stored) !== archiveMeta(written)) {
     await patchCapture(written.id, { archiveDirty: true });
     await inCaptureOrder(() => reconcileArchive(written.id)).catch(() => undefined);
