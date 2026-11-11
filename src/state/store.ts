@@ -946,8 +946,10 @@ async function onTetherFile(file: File, path: string, _handle: FileSystemFileHan
 
 /** A photo arrived with no patient selected: keep it until one is chosen. */
 export function holdPhoto(h: HeldPhoto): void {
+  const first = get().held.length === 0;
   set((s) => ({ held: [...s.held, h] }));
-  toast({ tone: 'warning', message: 'Photo received — choose a patient', detail: 'It’s waiting and will be filed to the patient you select.' });
+  // One notice is enough: the banner over the live view keeps count of the rest.
+  if (first) toast({ tone: 'warning', message: 'Photo received. Choose a patient', detail: 'It’s waiting and will be filed to the patient you select.' });
 }
 
 /** File a photo that arrived from the camera rather than from a shutter press in Lumen. */

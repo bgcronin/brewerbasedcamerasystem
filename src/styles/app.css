@@ -1534,8 +1534,12 @@ button.cam-preset:hover {
   transform: scale(0.9);
 }
 .shutter:disabled {
-  opacity: 0.35;
+  opacity: 0.6;
   cursor: not-allowed;
+}
+.shutter:disabled .shutter-core {
+  background: var(--surface-2);
+  box-shadow: none;
 }
 .shutter:disabled .shutter-ring {
   border-color: var(--hairline-3);
