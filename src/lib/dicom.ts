@@ -241,7 +241,7 @@ export async function buildDicom(p: DicomPhoto): Promise<Uint8Array> {
     text(0x00081030, 'LO', 'Slit lamp photography'),
     text(0x0008103e, 'LO', 'Slit lamp photographs'),
     sequence(0x00082218, [[text(0x00080100, 'SH', '81745001'), text(0x00080102, 'SH', 'SCT'), text(0x00080104, 'LO', 'Eye')]]), // anatomic region
-    text(0x00100010, 'PN', `${p.patient.lastName}^${p.patient.firstName}`),
+    text(0x00100010, 'PN', [p.patient.lastName, p.patient.firstName].map((n) => n.trim().replace(/\^/g, ' ')).filter(Boolean).join('^')),
     text(0x00100020, 'LO', p.patient.mrn),
     text(0x00100030, 'DA', dicomDate(p.patient.dob)),
     text(0x00100040, 'CS', sex),

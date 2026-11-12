@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { renderAnnotated } from '../lib/annotations';
-import { archiveCapture, archivedFileExists, isArchivedAs, removeArchived, renameArchived, syncAnnotatedCopy, updateArchivedMetadata } from '../lib/archive';
+import { BACKUP_DIR, MANIFEST, archiveCapture, archivedFileExists, isArchivedAs, removeArchived, renameArchived, syncAnnotatedCopy, updateArchivedMetadata, writeBackup } from '../lib/archive';
 import * as db from '../lib/db';
 import { addDiagnosis, hasDiagnosis, removeDiagnosis, sameDiagnosis } from '../lib/diagnoses';
 import { todayISO, toISODate } from '../lib/dates';
@@ -12,6 +12,7 @@ import type { ImportedRecord, ImportResult } from '../lib/importers';
 import { captureFileName, patientFolderName } from '../lib/naming';
 import { playShutter } from '../lib/sound';
 import { FolderWatcher, TETHER_LAST_ATTEMPT } from '../lib/tether';
+import { countRestore, photosIn, portableSettings, restoreArchive, scanArchive, type ArchiveScan, type RestoreCount } from '../lib/restore';
 import { forgetThumb, primeThumb } from '../lib/thumbs';
 import {
   DEFAULT_SETTINGS,
@@ -55,6 +56,15 @@ export interface FolderState {
   name?: string;
 }
 
+/** Where a restore from the archive folder has got to. */
+export type RestoreState =
+  | { status: 'idle' }
+  | { status: 'scanning'; folders: number }
+  | { status: 'found'; count: RestoreCount; missing: number; unlisted: string[]; unreadable: string[]; hasIndex: boolean }
+  | { status: 'restoring'; done: number; total: number; label: string }
+  | { status: 'done'; photos: number; patients: number; failed: { path: string; reason: string }[]; stopped: boolean }
+  | { status: 'error'; message: string };
+
 interface HeldPhoto {
   file: File;
   receivedAt: number;
@@ -85,7 +95,9 @@ interface AppState {
   processing: number;
   flashTick: number;
   lastCaptureId: string | null;
-  archive: FolderState & { pending: number };
+  /** `backupAt`: when the index of patients, visits and settings was last written to the folder. */
+  archive: FolderState & { pending: number; backupAt?: number };
+  restore: RestoreState;
   /** `arriving`: photos the camera folder has started to receive but that are not complete yet. */
   tether: FolderState & { watching: boolean; lastAt?: number; arriving: number };
   held: HeldPhoto[];
@@ -119,6 +131,7 @@ const initial: AppState = {
   flashTick: 0,
   lastCaptureId: null,
   archive: { status: fsSupported ? 'none' : 'unsupported', pending: 0 },
+  restore: { status: 'idle' },
   tether: { status: fsSupported ? 'none' : 'unsupported', watching: false, arriving: 0 },
   held: [],
   secondary: false,
@@ -301,6 +314,7 @@ export async function updateSettings(patch: Partial<Settings>): Promise<void> {
   set({ settings });
   if (patch.theme) applyTheme(patch.theme);
   await db.kvSet('settings', settings);
+  scheduleBackup();
 }
 
 export function transformFor(label: string | undefined): Transform {
@@ -407,6 +421,7 @@ export async function importToList(records: ImportedRecord[], defaultDate: strin
   // The import may have filled in the selected patient's record (a hospital number, say); what is on screen must be that record, not the one from before.
   const active = get().activePatientId;
   if (active) await selectPatient(active);
+  scheduleBackup();
   const n = summary.listed + summary.alreadyListed;
   toast({
     tone: 'success',
@@ -471,6 +486,7 @@ export async function savePatient(form: PatientForm, patientId?: string, visitId
 
   await Promise.all([loadRows(), refreshAllPatients()]);
   if (get().activePatientId === patient.id || !patientId) await selectPatient(patient.id);
+  scheduleBackup();
   return patient.id;
 }
 
@@ -485,6 +501,7 @@ export async function removeFromList(visitId: string): Promise<void> {
   }
   const row = get().rows.find((r) => r.visit.id === visitId);
   await db.deleteVisit(visitId);
+  scheduleBackup();
   if (row && row.patient.id === get().activePatientId) await selectPatient(null);
   await loadRows();
 }
@@ -917,7 +934,15 @@ const annotationTimers = new Map<string, number>();
  * afterwards an "_annotated" copy is written beside it in the archive folder.
  */
 export async function setAnnotations(id: string, annotations: Annotation[]): Promise<void> {
-  await patchCapture(id, { annotations: annotations.length ? annotations : undefined, annotationsAt: Date.now() });
+  // The marks themselves go into the record, and from there into visit.json, straight away:
+  // they are part of the backup whether or not the picture with them drawn in can be made.
+  await inCaptureOrder(async () => {
+    const c = await db.getCapture(id);
+    if (!c) return;
+    await patchCapture(id, { annotations: annotations.length ? annotations : undefined, annotationsAt: Date.now(), archiveDirty: c.archivedPath ? true : c.archiveDirty });
+    await reconcileArchive(id).catch(() => undefined); // stays marked; the next sync writes it
+  });
+  // The copy with the marks drawn in follows once the drawing has paused.
   window.clearTimeout(annotationTimers.get(id));
   annotationTimers.set(
     id,
@@ -1050,6 +1075,45 @@ export async function chooseArchiveFolder(): Promise<void> {
   const sameFolder = previous ? await previous.isSameEntry(handle).catch(() => false) : false;
   if (previous && !sameFolder) await forgetCopiesNotIn(handle);
   await syncArchive();
+  // A new computer, or a browser whose data was cleared: the folder has the photographs and Lumen has none.
+  if (!(await db.allCaptures()).length && (await holdsLumenPhotos(handle))) {
+    toast({
+      tone: 'default',
+      message: 'This folder already holds Lumen photographs',
+      detail: 'Restore them to see every patient and photo here again.',
+      action: {
+        label: 'Restore…',
+        run: () => {
+          openSheet({ type: 'settings' });
+          void checkArchiveForRestore();
+        },
+      },
+      duration: 20000,
+    });
+  }
+}
+
+/** A quick look: is this an archive Lumen has written to before? */
+async function holdsLumenPhotos(root: FileSystemDirectoryHandle): Promise<boolean> {
+  try {
+    let looked = 0;
+    for await (const [name, entry] of root.entries()) {
+      if (entry.kind !== 'directory') continue;
+      if (name === BACKUP_DIR) return true;
+      for await (const [, visit] of (entry as FileSystemDirectoryHandle).entries()) {
+        if (visit.kind !== 'directory') continue;
+        const found = await (visit as FileSystemDirectoryHandle).getFileHandle(MANIFEST).then(
+          () => true,
+          () => false,
+        );
+        if (found) return true;
+      }
+      if (++looked >= 40) break;
+    }
+  } catch {
+    /* unreadable: say nothing */
+  }
+  return false;
 }
 
 /**
@@ -1160,8 +1224,113 @@ async function runSync(quiet: boolean): Promise<void> {
     }
     // 4. Files of photos that have been deleted.
     await processArchiveRemovals();
+    // 5. The index of patients, visits and settings that makes the folder a complete backup.
+    scheduleBackup(1000);
   }
   await refreshPending();
+}
+
+/* ───────────────────────── backup and restore ───────────────────────── */
+
+let backupTimer: number | null = null;
+
+/**
+ * Write the index of patients, visits and settings to the archive folder soon. Each Lumen
+ * (each browser on each computer) keeps its own file there, so two never overwrite each other.
+ */
+export function scheduleBackup(delayMs = 5000): void {
+  if (typeof window === 'undefined' || !archiveHandle || get().archive.status !== 'connected' || get().secondary) return;
+  if (backupTimer != null) window.clearTimeout(backupTimer);
+  backupTimer = window.setTimeout(() => {
+    backupTimer = null;
+    void writeBackupNow().catch(() => undefined); // the folder may be away; the next change tries again
+  }, delayMs);
+}
+
+async function writeBackupNow(): Promise<void> {
+  if (!archiveHandle || get().archive.status !== 'connected' || get().secondary) return;
+  const [patients, visits] = await Promise.all([db.allPatients(), db.allVisits()]);
+  if (!patients.length) return;
+  const libraryId = await db.kvUpdate<string>('libraryId', (id) => id ?? uid());
+  await writeBackup(archiveHandle, {
+    app: 'Lumen slit lamp imaging',
+    kind: 'backup',
+    version: 1,
+    libraryId,
+    writtenAt: new Date().toISOString(),
+    settings: portableSettings(get().settings),
+    patients,
+    visits,
+  });
+  set((s) => ({ archive: { ...s.archive, backupAt: Date.now() } }));
+}
+
+let lastScan: ArchiveScan | null = null;
+let stopRestoring = false;
+
+/** Look through the archive folder and say what a restore would bring back. Nothing is changed. */
+export async function checkArchiveForRestore(): Promise<void> {
+  if (!archiveHandle || get().archive.status !== 'connected') {
+    set({ restore: { status: 'error', message: 'Connect the archive folder first.' } });
+    return;
+  }
+  set({ restore: { status: 'scanning', folders: 0 } });
+  try {
+    // First finish anything waiting to be written or removed, so the folder is as Lumen means it to be.
+    await syncArchive(true);
+    const scan = await scanArchive(archiveHandle, (folders) => set({ restore: { status: 'scanning', folders } }));
+    lastScan = scan;
+    const count = await countRestore(scan);
+    set({ restore: { status: 'found', count, missing: scan.missing.length, unlisted: scan.unlisted, unreadable: scan.unreadable, hasIndex: scan.backups.length > 0 } });
+  } catch (e) {
+    set({ restore: { status: 'error', message: `The folder could not be read. ${(e as Error).message}` } });
+  }
+}
+
+/** Bring back every photograph, patient and visit the folder holds that Lumen does not. */
+export async function runRestore(): Promise<void> {
+  const scan = lastScan;
+  if (!scan || get().restore.status === 'restoring') return;
+  stopRestoring = false;
+  set({ restore: { status: 'restoring', done: 0, total: photosIn(scan), label: '' } });
+  try {
+    const { settings } = get();
+    const result = await restoreArchive(scan, {
+      thumbnail: { format: settings.format, quality: settings.quality },
+      onProgress: (done, total, label) => set({ restore: { status: 'restoring', done, total, label } }),
+      shouldStop: () => stopRestoring,
+    });
+    if (result.settings) await updateSettings(result.settings);
+    await Promise.all([loadRows(), refreshAllPatients(), refreshPending(), get().library ? loadLibrary() : Promise.resolve()]);
+    const active = get().activePatientId;
+    if (active) {
+      // Show the active patient's restored history straight away.
+      const captures = await db.capturesForPatient(active);
+      const visits = await db.visitsForPatient(active);
+      if (get().activePatientId === active) set({ captures, patientVisits: visits });
+    }
+    lastScan = null;
+    set({ restore: { status: 'done', photos: result.photos, patients: result.patients, failed: result.failed, stopped: result.stopped } });
+    scheduleBackup(1000);
+    if (result.photos || result.patients) {
+      toast({
+        tone: 'success',
+        message: `${result.photos} photo${result.photos === 1 ? '' : 's'} restored`,
+        detail: result.stopped ? 'Stopped part-way. Restore again to carry on from here.' : 'Find them in the Library, or under each patient in Review.',
+        duration: 8000,
+      });
+    }
+  } catch (e) {
+    set({ restore: { status: 'error', message: (e as Error).message } });
+  }
+}
+
+export function stopRestore(): void {
+  stopRestoring = true;
+}
+
+export function dismissRestore(): void {
+  if (get().restore.status !== 'restoring') set({ restore: { status: 'idle' } });
 }
 
 /* ───────────────────────── tethered folder (Canon EOS) ───────────────────────── */

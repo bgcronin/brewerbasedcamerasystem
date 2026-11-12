@@ -3385,12 +3385,6 @@ button.cam-preset:hover {
   text-align: left;
   color: var(--accent-hi);
 }
-.viewer-downloads {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-}
 
 /* ───────── Library ───────── */
 
@@ -3809,10 +3803,63 @@ button.cam-preset:hover {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 2px;
-  padding-top: 12px;
-  border-top: 1px solid var(--hairline);
+  gap: 1px;
 }
 .viewer-export h4 {
   margin-bottom: 4px;
+}
+.viewer-export .btn {
+  min-height: 28px;
+  padding-top: 3px;
+  padding-bottom: 3px;
+}
+
+/* ───────── Backup and restore ───────── */
+
+.set-block {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px 14px;
+}
+.restore-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.restore-found {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border-radius: var(--r);
+  background: var(--surface-2);
+  font-size: var(--fs);
+}
+.restore-found p {
+  line-height: 1.45;
+}
+.restore-note {
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+  line-height: 1.45;
+}
+.restore-note.warn {
+  color: var(--warning);
+}
+.restore-note summary {
+  cursor: pointer;
+}
+.restore-note ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  overflow-wrap: anywhere;
+}
+.restore-bar {
+  height: 4px;
+  margin: 2px 0;
+}
+.restore-bar i {
+  transition: width 200ms linear;
 }

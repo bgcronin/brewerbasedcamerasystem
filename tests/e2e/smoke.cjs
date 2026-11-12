@@ -134,11 +134,15 @@ function assert(cond, msg) {
     return out;
   });
   const oldName = (before.match(/H100234_\d+_\d+_OD[\w.]*\.webp/) || [])[0];
-  assert(oldName && !files2.includes(`FITZGERALD_Eleanor_H100234/${files2[0].split('/')[1]}/${oldName}`), 'old OD-named file is gone from the archive');
+  assert(oldName && !files2.some((f) => f.startsWith('FITZGERALD_Eleanor_H100234/') && f.endsWith('/' + oldName)), 'old OD-named file is gone from the archive');
   assert(files2.filter((f) => f.includes('_OS')).length === 4 && !files2.some((f) => f.includes('_OD')), 'relabelled file is renamed to OS in the archive');
   const manifest = await page.evaluate(async () => {
     const root = await (await navigator.storage.getDirectory()).getDirectoryHandle('Archive');
-    for await (const [, p] of root.entries()) for await (const [, d] of p.entries()) return JSON.parse(await (await (await d.getFileHandle('visit.json')).getFile()).text());
+    // The patient's folder, not Lumen's own index folder beside it.
+    for await (const [name, p] of root.entries()) {
+      if (name.startsWith('_')) continue;
+      for await (const [, d] of p.entries()) return JSON.parse(await (await (await d.getFileHandle('visit.json')).getFile()).text());
+    }
   });
   assert(manifest.images.length === 4 && manifest.images.every((i) => /_OD|_OS/.test(i.file) && (i.file.includes('_OD') ? i.eye === 'OD' : i.eye === 'OS')), 'visit.json matches the file names');
   await page.keyboard.press('Escape');

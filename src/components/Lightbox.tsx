@@ -513,6 +513,26 @@ export function Lightbox() {
                 onBlur={() => note !== (c.note ?? '') && void updateCapture(c.id, { note: note || undefined })}
               />
             </section>
+            <section className="viewer-export">
+              <h4>Export</h4>
+              <Button size="sm" variant="ghost" icon="copy" onClick={copy}>
+                Copy to clipboard
+              </Button>
+              <Button size="sm" variant="ghost" icon="download" onClick={() => void download(false)}>
+                Download photo
+              </Button>
+              {marks.length > 0 && (
+                <Button size="sm" variant="ghost" icon="download" onClick={() => void download(true)}>
+                  Download with marks
+                </Button>
+              )}
+              <Button size="sm" variant="ghost" icon="page" disabled={!patient || busy === 'pdf'} onClick={() => void pdf()}>
+                {busy === 'pdf' ? 'Making the PDF…' : 'One-page PDF'}
+              </Button>
+              <Button size="sm" variant="ghost" icon="export" disabled={!patient || busy === 'dicom'} onClick={() => void dicom()}>
+                {busy === 'dicom' ? 'Making the file…' : 'DICOM file'}
+              </Button>
+            </section>
             <dl className="meta-list">
               <div>
                 <dt>Resolution</dt>
@@ -543,26 +563,6 @@ export function Lightbox() {
                 <dd className={cx(!c.archivedPath && 'muted')}>{c.archivedPath ? breakable(c.archivedPath) : 'Not yet written to disk'}</dd>
               </div>
             </dl>
-            <section className="viewer-export">
-              <h4>Export</h4>
-              <Button size="sm" variant="ghost" icon="copy" onClick={copy}>
-                Copy to clipboard
-              </Button>
-              <Button size="sm" variant="ghost" icon="download" onClick={() => void download(false)}>
-                Download photo
-              </Button>
-              {marks.length > 0 && (
-                <Button size="sm" variant="ghost" icon="download" onClick={() => void download(true)}>
-                  Download with marks
-                </Button>
-              )}
-              <Button size="sm" variant="ghost" icon="page" disabled={!patient || busy === 'pdf'} onClick={() => void pdf()}>
-                {busy === 'pdf' ? 'Making the PDF…' : 'One-page PDF'}
-              </Button>
-              <Button size="sm" variant="ghost" icon="export" disabled={!patient || busy === 'dicom'} onClick={() => void dicom()}>
-                {busy === 'dicom' ? 'Making the file…' : 'DICOM file'}
-              </Button>
-            </section>
           </aside>
         )}
       </div>

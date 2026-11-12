@@ -31,6 +31,7 @@ const GROUPS: { title: string; keys: [string[], string][] }[] = [
     keys: [
       [['←', '→'], 'Previous / next photo'],
       [['S'], 'Star'],
+      [['C'], 'Copy the photo, to paste into a letter'],
       [['A'], 'Annotate: circle, arrow, pen, text'],
       [['M'], 'Show / hide marks'],
       [['I'], 'Details'],

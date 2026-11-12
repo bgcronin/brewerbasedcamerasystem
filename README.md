@@ -1,6 +1,6 @@
 # Lumen · Slit Lamp Imaging
 
-Browser-based slit lamp photography for the ophthalmology clinic. Import the day's clinic list, pick a patient, choose the eye, and photograph. Every image is labelled with patient, eye (OD / OS / OU), illumination technique and diagnosis, then stored as an efficient WebP file in a clean folder per patient and visit. Any photograph can be found again by diagnosis, name or hospital number, and marked up with circles, arrows and labels.
+Browser-based slit lamp photography for the ophthalmology clinic. Import the day's clinic list, pick a patient, choose the eye, and photograph. Every image is labelled with patient, eye (OD / OS / OU), illumination technique and diagnosis, then stored as an efficient WebP file in a clean folder per patient and visit. Any photograph can be found again by diagnosis, name or hospital number, marked up with circles, arrows and labels, and sent on: pasted into a letter, as a one-page PDF, or as DICOM for a PACS.
 
 ![Capture view](docs/screenshots/capture.webp)
 
@@ -84,6 +84,24 @@ Every word you type has to match, so `fitz keratoconus` narrows to that patient'
 Open a photo and press **A** (or the pencil-line button). Draw a **circle** round a lesion (hold Shift for a perfect circle), an **arrow**, a **freehand** line or a **text** label, in yellow, cyan, pink or white. The eraser removes a mark, Ctrl+Z undoes, and scrolling still zooms while you draw (hold Space to move the photo).
 
 **The original photograph is never changed.** Marks are stored beside it, and can be hidden and shown with **M**. In the archive folder Lumen writes a second file next to the original, ending `_annotated`, with the marks drawn in, so anyone opening the folder sees them without Lumen. Downloads and ZIP exports include both.
+
+---
+
+## Getting photographs out
+
+Open a photo and look under **Export** in the details panel (press **I** if it is hidden).
+
+- **Copy to clipboard** (or press **C**). The photo is copied as a picture, with its marks if they are showing, ready to paste into a letter, the notes or an email. Large photos are scaled to 2400 pixels on the long side, which is plenty for a page.
+- **One-page PDF.** The clinic name, the patient, the visit, the diagnosis and the photograph with its eye, illumination and note. In **Review**, each visit also has **Summary PDF**: that visit's starred photos, or all of them if none is starred, right eye in the left column as on a chart. More than six run on to a second page.
+- **DICOM.** The photo as a DICOM file for a PACS or an imaging system such as Forum. In Review, **Export → DICOM (ZIP)** gives all of a patient's photos, one folder per visit.
+
+About the DICOM files, for whoever looks after the PACS:
+
+- Each photo is a **VL Photographic Image** (SOP class 1.2.840.10008.5.1.4.1.1.77.1.4), modality **XC**, carrying a baseline JPEG (transfer syntax 1.2.840.10008.1.2.4.50). A stored JPEG is used untouched; a WebP or PNG is saved as a high-quality JPEG first.
+- The header has the patient's name, hospital number, date of birth and sex, the visit date and time, image laterality (R, L or B), the anatomic region (eye), the clinic name, and the illumination, diagnoses and note in Image Comments. Text is UTF-8, so accented names are right.
+- One visit is one study with one series. Identifiers are worked out from Lumen's own, so exporting a photo twice gives a PACS the same image again, not a duplicate.
+- A photo with marks is exported twice: the original, and a second image marked as derived with burned-in annotation.
+- The files are written on this computer and nowhere else. Getting them into the PACS is done with the PACS's own import, or by whoever administers it; Lumen does not send anything over the network.
 
 ---
 
@@ -208,6 +226,9 @@ Archive/
       H100234_20261103_143205_OD_slit_annotated.webp   ← only if you drew on it; the original is untouched
       H100234_20261103_143212_OS_diffuse.webp
       visit.json         ← patient, visit and per-image metadata (eye, technique, time, diagnoses, notes, marks)
+  _Lumen/
+    backup-….json        ← Lumen's index: every patient, every visit, and the settings
+    README.txt
 ```
 
 - Photos are written to the archive the moment they're taken. If the folder is unavailable (network share down, or permission needed after a restart), photos are kept safely in the browser and synced when it's back. The same goes for relabels, notes, diagnoses and deletions made in the meantime. The top-bar pill shows the status and how many are waiting; Lumen retries with the next photo and at each start.
@@ -215,6 +236,26 @@ Archive/
 - Open Lumen in one window at a time. A second window says so and waits, so that the camera folder and the archive are never handled twice.
 - The browser copy belongs to that browser profile on that PC. Treat the **archive folder as the record**: put it on backed-up storage.
 - Encoding runs in a background thread, so the live view never stutters, even for large Canon files.
+
+### Backup and restore
+
+**The archive folder is the backup.** It holds every photograph, a `visit.json` beside each visit's photos (who, which eye, diagnoses, notes, marks), and in `_Lumen` an index of patients, visits and settings that Lumen rewrites a few seconds after each change. Back that one folder up like any other important folder and Lumen is backed up.
+
+**To restore**, on a new computer, or if the browser's data has been cleared:
+
+1. Install and open Lumen as usual.
+2. **Settings → Archive folder → Choose folder**, and pick the archive folder (or your copy of it).
+3. Lumen notices the folder already holds its photographs and offers **Restore**. You can also start it from **Settings → Backup and restore → Check the folder**. It first tells you what it found, and changes nothing until you press Restore.
+
+Restoring puts back the patients, the day lists, the photographs and everything attached to them: eye, illumination, diagnoses, notes, stars and annotations. Settings such as the clinic name and camera presets come back too, on a Lumen that has no patients yet. It is safe to run at any time:
+
+- It only adds what Lumen doesn't have. Run twice, the second run adds nothing.
+- It never changes or removes anything in the folder.
+- It can be stopped and carried on later.
+- Patients are matched by their folder, then hospital number, then name with date of birth. A name on its own is never treated as proof of who someone is: such a patient is restored as their own record.
+- A file in the folder that no `visit.json` describes is listed and left alone, because nothing says whose it is.
+
+A large archive takes a while, since every photograph is copied back into the browser. The progress bar shows how far it has got, and Lumen can be used meanwhile.
 
 ---
 
@@ -229,6 +270,7 @@ Archive/
 | G | Centring reticle | F | Full-screen live view |
 | ← → | Previous / next photo (viewer) | S, I, Del | Star, details, delete |
 | A | Annotate (viewer) | M | Show / hide marks |
+| C | Copy the photo to the clipboard (viewer) | | |
 
 The eye, illumination, diagnosis, reticle and full-screen keys act only in the Capture view, where their controls are on screen.
 
@@ -242,7 +284,8 @@ Press **?** in the app for the full list.
 src/
   lib/            framework-free logic: CSV parsing, importers, dates & names, IndexedDB,
                   archive writer, folder watcher, encoder, ZIP, file naming,
-                  diagnoses (vocabulary + matching), search, annotations (drawing + rendering)
+                  diagnoses (vocabulary + matching), search, annotations (drawing + rendering),
+                  dicom (DICOM writer), pdf + summary (one-page PDF), exports, restore (rebuild from the archive)
   state/          app state (zustand): store.ts, camera.ts, canon.ts (Camera Link client), keyboard actions
   components/     React UI
   styles/         design tokens (tokens.css), base controls, layout
@@ -259,6 +302,8 @@ npm run typecheck
 node tests/e2e/smoke.cjs   # with `npm start` running; needs Playwright + Chromium
 node tests/e2e/features.cjs  # with `npm start` running; labels, Library search, annotation and the archive copy
 node tests/e2e/safety.cjs    # with `npm start` running; deletes survive a reload, and the second-window guard
+node tests/e2e/exports.cjs   # with `npm start` running; clipboard, one-page PDF and DICOM, read back with an independent DICOM parser
+node tests/e2e/restore.cjs   # with `npm start` running; wipes the browser's database and restores everything from the archive folder
 node tests/e2e/canon.cjs   # after `npm run build`; starts the helper's simulated EOS 60D itself
 node tests/e2e/scan.cjs    # with `npm start` running; imports a printed list as PDF and as a photo (OCR)
 cd helper && npm test      # runs the real Canon SDK bindings against a stand-in library (needs a C compiler)
@@ -268,8 +313,8 @@ The smoke test imports the sample list, captures from Chromium's fake camera, ch
 
 ### Possible next steps
 
-- **DICOM export** (VL Photographic Image) for PACS or Forum integration.
+- Sending DICOM straight to a PACS (C-STORE or DICOMweb) rather than exporting files; this needs a small local service, as a browser cannot speak DICOM networking.
 - HL7 / FHIR worklist import from the PAS.
 - Measurements (calibrated against the slit lamp's magnification) and fluorescein grading overlays.
-- A whole-database backup and "rebuild from the archive folder", for moving to a new PC.
+- Keeping full-size photos in the browser only for a while once they are safely archived, to save disk space.
 - Canon presets that also cover image quality and drive mode.

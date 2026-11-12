@@ -115,6 +115,10 @@ export async function deleteVisit(id: string): Promise<void> {
   await (await db()).delete('visits', id);
 }
 
+export async function allVisits(): Promise<Visit[]> {
+  return (await db()).getAll('visits');
+}
+
 export async function visitsForDate(date: string): Promise<Visit[]> {
   return (await db()).getAllFromIndex('visits', 'date', date);
 }

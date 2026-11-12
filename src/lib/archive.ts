@@ -12,11 +12,11 @@
 import { fileExists, fileSize, getDirPath, isNotFound, readTextFile, renameFile, writeFile } from './fsaccess';
 import { annotatedName } from './annotations';
 import { patientFolderName, withSuffix } from './naming';
-import { techniqueLabel, type Annotation, type Capture, type Patient, type Visit } from './types';
+import { techniqueLabel, type Annotation, type Capture, type Patient, type Settings, type Visit } from './types';
 
-const MANIFEST = 'visit.json';
+export const MANIFEST = 'visit.json';
 
-interface ManifestImage {
+export interface ManifestImage {
   file: string;
   eye: string;
   technique?: string;
@@ -37,7 +37,7 @@ interface ManifestImage {
   annotatedFile?: string;
 }
 
-interface Manifest {
+export interface Manifest {
   generator: 'Lumen slit lamp imaging';
   version: 1;
   patient: { mrn: string; firstName: string; lastName: string; dob?: string; sex?: string };
@@ -268,4 +268,45 @@ export async function archivedFileExists(root: FileSystemDirectoryHandle, archiv
     if (isNotFound(e)) return false;
     throw e;
   }
+}
+
+/* ───────── backup index ───────── */
+
+/** Where Lumen keeps its own index inside the archive folder (never a patient's folder). */
+export const BACKUP_DIR = '_Lumen';
+
+/**
+ * What the photographs' own folders don't hold: every patient (with their notes), every visit
+ * (including ones with no photos yet), and the settings worth carrying to another computer.
+ * With the visit.json files beside the photos, this makes the archive folder a complete backup.
+ */
+export interface BackupFile {
+  app: 'Lumen slit lamp imaging';
+  kind: 'backup';
+  version: 1;
+  /** Which Lumen wrote it: each browser keeps its own file, so two never overwrite each other. */
+  libraryId: string;
+  writtenAt: string;
+  settings: Partial<Settings>;
+  patients: Patient[];
+  visits: Visit[];
+}
+
+export const backupFileName = (libraryId: string) => `backup-${libraryId}.json`;
+
+const BACKUP_README = `This folder is written by Lumen slit lamp imaging.
+
+It holds an index of patients, visits and settings. Together with the photographs
+and the visit.json file in each visit's folder, it lets Lumen be restored on a new
+computer: connect this archive folder in Lumen's Settings and choose "Restore".
+
+Please keep it with the photographs when you copy or back up the archive.
+`;
+
+export function writeBackup(root: FileSystemDirectoryHandle, backup: BackupFile): Promise<void> {
+  return enqueue(async () => {
+    const dir = await root.getDirectoryHandle(BACKUP_DIR, { create: true });
+    await writeFile(dir, backupFileName(backup.libraryId), JSON.stringify(backup));
+    if (!(await fileExists(dir, 'README.txt'))) await writeFile(dir, 'README.txt', BACKUP_README);
+  });
 }

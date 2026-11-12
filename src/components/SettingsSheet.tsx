@@ -1,13 +1,18 @@
 import { useEffect, useState } from 'react';
 import { fsSupported } from '../lib/fsaccess';
+import { formatClock } from '../lib/dates';
 import { formatBytes } from '../lib/naming';
 import { TECHNIQUES, type DateOrder, type ImageFormat, type ThemePref } from '../lib/types';
 import { describeValues, reconnectLink, removePreset } from '../state/canon';
 import {
+  checkArchiveForRestore,
   chooseArchiveFolder,
   closeSheet,
   disconnectArchive,
+  dismissRestore,
   reconnectArchive,
+  runRestore,
+  stopRestore,
   syncArchive,
   updateSettings,
   useApp,
@@ -31,6 +36,161 @@ function Row({ title, detail, children, wide }: { title: string; detail?: React.
       </div>
       <div className="set-row-control">{children}</div>
     </div>
+  );
+}
+
+const count = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
+
+/**
+ * The archive folder is the backup: the photographs, a visit.json beside them, and Lumen's index
+ * of patients, visits and settings. Restore reads those back, on a new computer or after the
+ * browser's data has been cleared.
+ */
+function BackupRestore() {
+  const archive = useApp((s) => s.archive);
+  const restore = useApp((s) => s.restore);
+  const connected = archive.status === 'connected';
+  return (
+    <section className="set-group">
+      <h3>Backup and restore</h3>
+      <div className="set-card">
+        <div className="set-block">
+          <div className="set-row-text">
+            <span className="set-row-title">Backup</span>
+            <span className="set-row-detail">
+              {connected
+                ? 'The archive folder is the backup: the photographs, and beside them an index of patients, visits and settings. That folder alone is enough to restore from, so keep it backed up.'
+                : 'Connect an archive folder above. Without one, photographs exist only in this browser.'}
+            </span>
+          </div>
+          <div className="restore-actions">
+            <StatusDot tone={connected ? 'ok' : 'warn'} />
+            <span className="restore-note">{connected ? (archive.backupAt ? `Index written at ${formatClock(archive.backupAt)}` : 'The index is written a few seconds after each change') : 'Not backed up'}</span>
+          </div>
+        </div>
+
+        <div className="set-block restore">
+          <div className="set-row-text">
+            <span className="set-row-title">Restore from the archive folder</span>
+            <span className="set-row-detail">On a new computer, or if this browser’s data has been cleared: connect the archive folder above, then restore. Only what is missing is added, and nothing in the folder is changed.</span>
+          </div>
+
+          {(restore.status === 'idle' || restore.status === 'error') && (
+            <div className="restore-actions">
+              <Button size="sm" icon="refresh" disabled={!connected} onClick={() => void checkArchiveForRestore()}>
+                Check the folder
+              </Button>
+              {restore.status === 'error' && <span className="restore-note warn">{restore.message}</span>}
+            </div>
+          )}
+
+          {restore.status === 'scanning' && (
+            <div className="restore-actions">
+              <span className="spinner spinner-sm" />
+              <span className="restore-note">Looking through the folder… {restore.folders > 0 && count(restore.folders, 'patient folder')}</span>
+            </div>
+          )}
+
+          {restore.status === 'found' && (
+            <div className="restore-found">
+              <p>
+                {restore.count.photos === 0 ? (
+                  'No Lumen photographs were found in this folder.'
+                ) : restore.count.newPhotos === 0 ? (
+                  <>
+                    <strong>Everything in the folder is already in Lumen.</strong> {count(restore.count.photos, 'photo')} of {count(restore.count.patients, 'patient')}.
+                  </>
+                ) : (
+                  <>
+                    <strong>
+                      {count(restore.count.newPhotos, 'photo')} {restore.count.newPhotos === 1 ? 'is' : 'are'} in the folder and not in Lumen.
+                    </strong>{' '}
+                    The folder holds {count(restore.count.photos, 'photo')} of {count(restore.count.patients, 'patient')} over {count(restore.count.visits, 'visit')}.
+                  </>
+                )}
+              </p>
+              {restore.missing > 0 && <p className="restore-note warn">{count(restore.missing, 'photo')} listed in the folder’s records {restore.missing === 1 ? 'is' : 'are'} no longer there and can’t be restored.</p>}
+              {restore.unlisted.length > 0 && (
+                <details className="restore-note">
+                  <summary>
+                    {count(restore.unlisted.length, 'file')} in the folder {restore.unlisted.length === 1 ? 'has' : 'have'} no record saying whose {restore.unlisted.length === 1 ? 'it is' : 'they are'}, and will be left alone
+                  </summary>
+                  <ul>
+                    {restore.unlisted.slice(0, 20).map((p) => (
+                      <li key={p}>{p}</li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+              {restore.unreadable.length > 0 && <p className="restore-note warn">{count(restore.unreadable.length, 'record')} could not be read: {restore.unreadable.slice(0, 3).join(', ')}</p>}
+              <div className="restore-actions">
+                {restore.count.newPhotos > 0 || (restore.hasIndex && restore.count.photos === 0) ? (
+                  <Button size="sm" variant="primary" onClick={() => void runRestore()}>
+                    {restore.count.newPhotos > 0 ? `Restore ${count(restore.count.newPhotos, 'photo')}` : 'Restore patients and visits'}
+                  </Button>
+                ) : null}
+                <Button size="sm" variant="ghost" onClick={dismissRestore}>
+                  {restore.count.newPhotos > 0 ? 'Not now' : 'Close'}
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {restore.status === 'restoring' && (
+            <div className="restore-found">
+              <p>
+                <strong>
+                  Restoring {Math.min(restore.done + 1, restore.total).toLocaleString()} of {restore.total.toLocaleString()}
+                </strong>{' '}
+                {restore.label}
+              </p>
+              <div className="progress restore-bar" role="progressbar" aria-valuemin={0} aria-valuemax={restore.total} aria-valuenow={restore.done}>
+                <i style={{ width: `${restore.total ? (restore.done / restore.total) * 100 : 0}%` }} />
+              </div>
+              <div className="restore-actions">
+                <Button size="sm" variant="ghost" onClick={stopRestore}>
+                  Stop
+                </Button>
+                <span className="restore-note">You can stop and carry on later: what has been restored is kept.</span>
+              </div>
+            </div>
+          )}
+
+          {restore.status === 'done' && (
+            <div className="restore-found">
+              <p>
+                <strong>
+                  {restore.stopped ? 'Stopped.' : 'Done.'} {count(restore.photos, 'photo')} restored
+                  {restore.patients > 0 && `, ${count(restore.patients, 'patient')} added`}.
+                </strong>
+              </p>
+              {restore.failed.length > 0 && (
+                <details className="restore-note warn" open>
+                  <summary>{count(restore.failed.length, 'photo')} could not be restored</summary>
+                  <ul>
+                    {restore.failed.slice(0, 20).map((f) => (
+                      <li key={f.path}>
+                        {f.path}: {f.reason}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+              <div className="restore-actions">
+                {restore.stopped && (
+                  <Button size="sm" onClick={() => void checkArchiveForRestore()}>
+                    Carry on
+                  </Button>
+                )}
+                <Button size="sm" variant="ghost" onClick={dismissRestore}>
+                  Close
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -85,6 +245,10 @@ export function SettingsSheet() {
       if (est) setUsage({ used: est.usage ?? 0, quota: est.quota ?? 0, persisted });
     })();
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A restore can bring the settings back while this sheet is open: show them.
+  useEffect(() => setClinic(settings.clinicName), [settings.clinicName]);
+  useEffect(() => setLinkUrl(settings.cameraLinkUrl), [settings.cameraLinkUrl]);
 
   const lossy = settings.format !== 'image/png';
 
@@ -174,6 +338,8 @@ export function SettingsSheet() {
             )}
           </div>
         </section>
+
+        {fsSupported && <BackupRestore />}
 
         <section className="set-group">
           <h3>Photo format</h3>

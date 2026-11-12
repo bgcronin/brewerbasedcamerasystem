@@ -174,6 +174,24 @@ describe('relabelling a photo', () => {
   });
 });
 
+describe('marks drawn on a photo', () => {
+  it('are recorded in visit.json at once, even when the copy with them drawn in cannot be made', async () => {
+    await patient('Finch');
+    const c = await shoot();
+    // (This test environment has no canvas, so the drawn copy fails: exactly the case that matters.)
+    await store.setAnnotations(c.id, [{ id: 'm', kind: 'arrow', color: '#FFD60A', x1: 0.2, y1: 0.2, x2: 0.5, y2: 0.5 }]);
+    const rec = await stored(c.id);
+    const entry = (await readJson<{ images: { annotations?: unknown[]; annotatedFile?: string }[] }>(archive, rec.archivedPath!.split('/').slice(0, 2).join('/') + '/visit.json')).images[0];
+    expect(entry.annotations).toEqual([{ id: 'm', kind: 'arrow', color: '#FFD60A', x1: 0.2, y1: 0.2, x2: 0.5, y2: 0.5 }]);
+    expect(entry.annotatedFile).toBeUndefined(); // no copy yet, and visit.json does not claim one
+    expect(rec.archiveDirty).toBeFalsy();
+    // Clearing the marks clears them from the record too.
+    await store.setAnnotations(c.id, []);
+    const cleared = (await readJson<{ images: { annotations?: unknown[] }[] }>(archive, rec.archivedPath!.split('/').slice(0, 2).join('/') + '/visit.json')).images[0];
+    expect(cleared.annotations).toBeUndefined();
+  });
+});
+
 describe('who and which eye a photo is filed under', () => {
   it('a batch of dropped files all goes to the patient and eye selected when it was dropped', async () => {
     const a = await patient('Grace');
