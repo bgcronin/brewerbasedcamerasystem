@@ -2,14 +2,15 @@ import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ANNOTATION_COLORS, annotatedName, metrics, renderAnnotated, type AnnotationTool } from '../lib/annotations';
 import { formatClock, formatShortDate } from '../lib/dates';
-import { getImage } from '../lib/db';
+import { getImage, getVisit } from '../lib/db';
 import { addDiagnosis, sameDiagnosis } from '../lib/diagnoses';
+import { buildDicomFiles, buildSummaryPdf, copyPhotoToClipboard, ranksWithinVisits } from '../lib/exports';
 import { uid } from '../lib/id';
 import { displayName } from '../lib/names';
-import { formatBytes, formatLabel, megapixels } from '../lib/naming';
+import { formatBytes, formatLabel, megapixels, patientFolderName } from '../lib/naming';
 import { useOverlayFocus } from '../lib/overlay';
 import { useFullImageFor } from '../lib/thumbs';
-import { downloadBlob } from '../lib/zip';
+import { buildZip, downloadBlob } from '../lib/zip';
 import { TECHNIQUES, techniqueLabel, type Annotation, type Capture, type Eye, type ImageFormat } from '../lib/types';
 import { applyDiagnosesToVisit, closeLightbox, deleteCapture, openCompare, setAnnotations, setCaptureDiagnoses, toast, updateCapture, useApp } from '../state/store';
 import { AnnotationLayer } from './AnnotationLayer';
@@ -80,6 +81,10 @@ export function Lightbox() {
   const [textAt, setTextAt] = useState<{ x: number; y: number; clientX: number; clientY: number; scale: number } | null>(null);
   const [text, setText] = useState('');
   const root = useRef<HTMLDivElement>(null);
+  const clinicName = useApp((s) => s.settings.clinicName);
+  const [busy, setBusy] = useState<'pdf' | 'dicom' | null>(null);
+  /** The keyboard handler reaches the current copy action through this. */
+  const copyRef = useRef<() => void>(() => undefined);
   const history = useRef<Annotation[][]>([]);
   const [undoable, setUndoable] = useState(0);
   const textCancelled = useRef(false);
@@ -169,7 +174,15 @@ export function Lightbox() {
         return;
       }
       // A held key must never act more than once: Delete in particular.
-      if (e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.repeat || e.altKey) return;
+      if (e.ctrlKey || e.metaKey) {
+        // Ctrl+C copies the photo, unless some text is selected (then it copies the text, as usual).
+        if (e.key.toLowerCase() === 'c' && !window.getSelection()?.toString()) {
+          e.preventDefault();
+          copyRef.current();
+        }
+        return;
+      }
       if (e.key === 'Escape') closeLightbox();
       else if (e.key === 'ArrowRight') step(1);
       else if (e.key === 'ArrowLeft') step(-1);
@@ -178,6 +191,7 @@ export function Lightbox() {
       else if (e.key.toLowerCase() === 'i') setInfo((v) => !v);
       else if (e.key.toLowerCase() === 'a') startAnnotating();
       else if (e.key.toLowerCase() === 'm' && marks.length) setShowMarks((v) => !v);
+      else if (e.key.toLowerCase() === 'c') copyRef.current();
       else if (e.key === '0') setView(ZOOM_FIT);
       else return;
       e.preventDefault();
@@ -224,6 +238,58 @@ export function Lightbox() {
   };
 
   const marksVisible = showMarks || annotating;
+  const shownMarks = marksVisible && marks.length ? marks : undefined;
+  const failed = (what: string) => (e: unknown) => toast({ tone: 'error', message: what, detail: (e as Error)?.message });
+
+  /** What is on screen goes to the clipboard: with its marks if they are showing. */
+  const copy = () => {
+    copyPhotoToClipboard(async () => {
+      const img = await getImage(c.id);
+      if (!img) throw new Error('The photo could not be read.');
+      return { photo: img.full, annotations: shownMarks };
+    }).then(() => toast({ tone: 'success', message: shownMarks ? 'Photo copied with its marks' : 'Photo copied', detail: 'Paste it into your letter or notes.' }), failed('Couldn’t copy the photo'));
+  };
+  copyRef.current = copy;
+
+  const pdf = async () => {
+    if (!patient) return;
+    setBusy('pdf');
+    try {
+      const img = await getImage(c.id);
+      if (!img) throw new Error('The photo could not be read.');
+      const blob = await buildSummaryPdf({
+        clinicName,
+        patient,
+        visitDate: c.date,
+        sources: [{ capture: { ...c, annotations: shownMarks }, photo: img.full }],
+        title: `${displayName(patient)}, ${formatShortDate(c.date)}`,
+      });
+      downloadBlob(blob, `${patientFolderName(patient)}_${c.date}_${c.eye}.pdf`);
+    } catch (e) {
+      failed('Couldn’t make the PDF')(e);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const dicom = async () => {
+    if (!patient) return;
+    setBusy('dicom');
+    try {
+      const [img, visit] = await Promise.all([getImage(c.id), getVisit(c.visitId)]);
+      if (!img || !visit) throw new Error('The photo could not be read.');
+      const rank = ranksWithinVisits(samePatient).get(c.id) ?? 1;
+      const files = await buildDicomFiles([{ capture: { ...c, annotations: marks.length ? marks : undefined }, photo: img.full, patient, visit, rank }], clinicName);
+      // One file as it is; an original with its marked copy as a pair in a ZIP.
+      if (files.length === 1) downloadBlob(files[0].data, files[0].name);
+      else downloadBlob(await buildZip(files.map((f) => ({ path: f.name, data: f.data }))), files[0].name.replace(/\.dcm$/, '_DICOM.zip'));
+      toast({ tone: 'success', message: files.length === 1 ? 'DICOM file ready' : 'DICOM files ready', detail: files.length === 1 ? files[0].name : 'The photo and its marked copy, in a ZIP.' });
+    } catch (e) {
+      failed('Couldn’t make the DICOM file')(e);
+    } finally {
+      setBusy(null);
+    }
+  };
   const drawing = annotating && !spaceHeld;
   const from = Math.max(0, index - STRIP_REACH);
   const strip = ids.slice(from, index + STRIP_REACH + 1);
@@ -314,6 +380,7 @@ export function Lightbox() {
               <IconButton icon={showMarks ? 'eye' : 'eyeOff'} label={showMarks ? 'Hide marks (M)' : 'Show marks (M)'} onClick={() => setShowMarks((v) => !v)} />
             )}
             {compareWith && <IconButton icon="compare" label="Compare with another photo of this eye" onClick={() => openCompare(compareWith.id, c.id)} />}
+            <IconButton icon="copy" label={shownMarks ? 'Copy with marks, to paste into a letter (C)' : 'Copy, to paste into a letter (C)'} onClick={copy} />
             <IconButton
               icon="download"
               label={marks.length && marksVisible ? 'Download with marks' : 'Download'}
@@ -457,6 +524,8 @@ export function Lightbox() {
                 <dt>File</dt>
                 <dd>
                   {formatLabel(c.mime as ImageFormat) ?? c.mime}, {formatBytes(c.bytes)}
+                  <br />
+                  <span className="muted">{breakable(c.fileName)}</span>
                 </dd>
               </div>
               {c.exposure && (
@@ -474,16 +543,26 @@ export function Lightbox() {
                 <dd className={cx(!c.archivedPath && 'muted')}>{c.archivedPath ? breakable(c.archivedPath) : 'Not yet written to disk'}</dd>
               </div>
             </dl>
-            <div className="viewer-downloads">
+            <section className="viewer-export">
+              <h4>Export</h4>
+              <Button size="sm" variant="ghost" icon="copy" onClick={copy}>
+                Copy to clipboard
+              </Button>
               <Button size="sm" variant="ghost" icon="download" onClick={() => void download(false)}>
-                {c.fileName}
+                Download photo
               </Button>
               {marks.length > 0 && (
                 <Button size="sm" variant="ghost" icon="download" onClick={() => void download(true)}>
-                  Copy with marks
+                  Download with marks
                 </Button>
               )}
-            </div>
+              <Button size="sm" variant="ghost" icon="page" disabled={!patient || busy === 'pdf'} onClick={() => void pdf()}>
+                {busy === 'pdf' ? 'Making the PDF…' : 'One-page PDF'}
+              </Button>
+              <Button size="sm" variant="ghost" icon="export" disabled={!patient || busy === 'dicom'} onClick={() => void dicom()}>
+                {busy === 'dicom' ? 'Making the file…' : 'DICOM file'}
+              </Button>
+            </section>
           </aside>
         )}
       </div>

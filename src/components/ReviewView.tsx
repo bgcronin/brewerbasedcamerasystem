@@ -3,13 +3,14 @@ import { annotatedName, renderAnnotated } from '../lib/annotations';
 import { ageFromDOB, formatClock, formatLongDate, formatShortDate } from '../lib/dates';
 import { getImage } from '../lib/db';
 import { addDiagnosis } from '../lib/diagnoses';
+import { buildDicomFiles, buildSummaryPdf, ranksWithinVisits, type DicomSource, type SummarySource } from '../lib/exports';
 import { displayName } from '../lib/names';
 import { patientFolderName, withSuffix } from '../lib/naming';
 import { techniqueLabel, type Capture, type Eye } from '../lib/types';
 import { buildZip, downloadBlob, type ZipEntry } from '../lib/zip';
 import { openCompare, openLightbox, setView, toast, useApp } from '../state/store';
 import { Icon } from './Icon';
-import { Avatar, Button, EyeTag, Segmented, Thumb, cx } from './ui';
+import { Avatar, Button, EyeTag, Menu, Segmented, Thumb, cx } from './ui';
 
 type Filter = 'all' | 'OD' | 'OS' | 'starred';
 
@@ -47,6 +48,8 @@ export function ReviewView() {
   const [selecting, setSelecting] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
   const [exporting, setExporting] = useState<string | null>(null);
+  const clinicName = useApp((s) => s.settings.clinicName);
+  const [summarising, setSummarising] = useState<string | null>(null);
 
   const shown = useMemo(
     () => captures.filter((c) => (filter === 'all' ? true : filter === 'starred' ? c.starred : c.eye === filter)),
@@ -130,6 +133,63 @@ export function ReviewView() {
     }
   };
 
+  /** Every photo as a DICOM file (and a second one for a photo with marks), one folder per visit. */
+  const exportDicom = async () => {
+    if (!captures.length) return;
+    setExporting('Preparing…');
+    try {
+      const root = `${patientFolderName(patient)}_DICOM`;
+      const ranks = ranksWithinVisits(captures);
+      const sources: DicomSource[] = [];
+      for (const c of captures) {
+        const img = await getImage(c.id);
+        const visit = visits.find((v) => v.id === c.visitId);
+        if (img && visit) sources.push({ capture: c, photo: img.full, patient, visit, rank: ranks.get(c.id) ?? 1 });
+      }
+      const files = await buildDicomFiles(sources, clinicName, (d, t) => setExporting(`Converting ${d} of ${t}…`));
+      const used = new Set<string>();
+      const entries: ZipEntry[] = files.map((f) => {
+        let name = f.name;
+        for (let n = 2; used.has(`${f.visitDate}/${name}`); n++) name = withSuffix(f.name, n);
+        used.add(`${f.visitDate}/${name}`);
+        return { path: `${root}/${f.visitDate}/${name}`, data: f.data };
+      });
+      const zip = await buildZip(entries, (d, t) => setExporting(`Packing ${d} of ${t}…`));
+      downloadBlob(zip, `${root}.zip`);
+      toast({ tone: 'success', message: 'DICOM export ready', detail: `${files.length} file${files.length === 1 ? '' : 's'} in ${root}.zip, one folder per visit.` });
+    } catch (e) {
+      toast({ tone: 'error', message: 'DICOM export failed', detail: (e as Error).message });
+    } finally {
+      setExporting(null);
+    }
+  };
+
+  /** A PDF of one visit for a letter: its starred photos, or all of them if none is starred. */
+  const summaryPdf = async (date: string) => {
+    const ofVisit = captures.filter((c) => c.date === date);
+    const chosen = ofVisit.some((c) => c.starred) ? ofVisit.filter((c) => c.starred) : ofVisit;
+    setSummarising(date);
+    try {
+      const sources: SummarySource[] = [];
+      for (const c of chosen) {
+        const img = await getImage(c.id);
+        if (img) sources.push({ capture: c, photo: img.full });
+      }
+      if (!sources.length) throw new Error('The photos could not be read.');
+      const blob = await buildSummaryPdf({ clinicName, patient, visitDate: date, sources, title: `${displayName(patient)}, ${formatShortDate(date)}` });
+      downloadBlob(blob, `${patientFolderName(patient)}_${date}.pdf`);
+      toast({
+        tone: 'success',
+        message: 'Summary PDF ready',
+        detail: chosen.length < ofVisit.length ? `The ${chosen.length} starred photo${chosen.length === 1 ? '' : 's'} of this visit.` : `All ${chosen.length} photo${chosen.length === 1 ? '' : 's'} of this visit. Star some to include only those.`,
+      });
+    } catch (e) {
+      toast({ tone: 'error', message: 'Couldn’t make the PDF', detail: (e as Error).message });
+    } finally {
+      setSummarising(null);
+    }
+  };
+
   const age = ageFromDOB(patient.dob);
   const visitFor = (date: string) => visits.find((v) => v.date === date);
 
@@ -176,9 +236,16 @@ export function ReviewView() {
           >
             Compare
           </Button>
-          <Button size="sm" icon="download" onClick={() => void exportZip()} disabled={!captures.length || !!exporting}>
-            {exporting ?? 'Export'}
-          </Button>
+          <Menu
+            size="sm"
+            icon="download"
+            label={exporting ?? 'Export'}
+            disabled={!captures.length || !!exporting}
+            items={[
+              { label: 'Photos (ZIP)', detail: 'The files as archived, with any marked copies', icon: 'image', onSelect: () => void exportZip() },
+              { label: 'DICOM (ZIP)', detail: 'For a PACS or imaging system', icon: 'export', onSelect: () => void exportDicom() },
+            ]}
+          />
         </div>
       </header>
 
@@ -232,6 +299,18 @@ export function ReviewView() {
                       ))}
                     </span>
                   )}
+                  <span className="visit-tools">
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      icon="page"
+                      disabled={summarising === date}
+                      onClick={() => void summaryPdf(date)}
+                      title="A one-page PDF of this visit for a letter: the starred photos, or all of them if none is starred"
+                    >
+                      {summarising === date ? 'Making the PDF…' : 'Summary PDF'}
+                    </Button>
+                  </span>
                 </h2>
                 <div className="eye-columns">
                   {(filter === 'all' || filter === 'OD' || filter === 'starred') && (

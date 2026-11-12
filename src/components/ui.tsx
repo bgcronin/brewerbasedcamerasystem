@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ButtonHTMLAttributes, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { initials } from '../lib/names';
 import { useBackgroundInert } from '../lib/overlay';
@@ -35,6 +35,79 @@ export function IconButton({ icon, label, active, className, ...rest }: ButtonHT
     <button type="button" className={cx('icon-btn', active && 'is-active', className)} aria-label={label} title={label} {...rest}>
       <Icon name={icon} />
     </button>
+  );
+}
+
+/** A button that opens a short list of actions. */
+export function Menu({
+  label,
+  icon,
+  items,
+  size = 'md',
+  variant = 'secondary',
+  disabled,
+  align = 'right',
+}: {
+  label: ReactNode;
+  icon?: IconName;
+  items: { label: string; detail?: string; icon?: IconName; onSelect: () => void; disabled?: boolean }[];
+  size?: 'sm' | 'md';
+  variant?: BtnVariant;
+  disabled?: boolean;
+  align?: 'left' | 'right';
+}) {
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const away = (e: PointerEvent) => {
+      if (!root.current?.contains(e.target as Node)) setOpen(false);
+    };
+    // Escape closes the list and nothing else (not the sheet or viewer it sits in).
+    const key = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.stopPropagation();
+      e.preventDefault();
+      setOpen(false);
+      root.current?.querySelector<HTMLElement>('button')?.focus();
+    };
+    window.addEventListener('pointerdown', away, true);
+    window.addEventListener('keydown', key, true);
+    return () => {
+      window.removeEventListener('pointerdown', away, true);
+      window.removeEventListener('keydown', key, true);
+    };
+  }, [open]);
+  return (
+    <div ref={root} className={cx('menu', open && 'is-open', `menu-${align}`)}>
+      <Button size={size} variant={variant} icon={icon} iconRight="chevronDown" disabled={disabled} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+        {label}
+      </Button>
+      {open && (
+        <ul className="menu-list" role="menu">
+          {items.map((it) => (
+            <li key={it.label} role="none">
+              <button
+                type="button"
+                role="menuitem"
+                className="menu-item"
+                disabled={it.disabled}
+                onClick={() => {
+                  setOpen(false);
+                  it.onSelect();
+                }}
+              >
+                {it.icon && <Icon name={it.icon} size={16} />}
+                <span className="menu-item-text">
+                  <span>{it.label}</span>
+                  {it.detail && <span className="menu-item-detail">{it.detail}</span>}
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 
