@@ -2981,6 +2981,31 @@ button.cam-preset:hover {
     display: none;
   }
 }
+/* When the controls have to scroll (a smaller screen with the Canon panel showing), the patient's
+   name and number stay in view above them: you always see whose photograph is being taken. */
+@media (max-height: 1040px) {
+  .pcard:not(.pcard-empty) {
+    display: contents;
+  }
+  /* The header reaches up through the panel's own top padding, so nothing shows above it once stuck. */
+  .pcard-top {
+    position: sticky;
+    top: -18px;
+    z-index: 2;
+    margin: -18px -2px -8px;
+    padding: 18px 4px 10px;
+    background: var(--surface);
+    box-shadow: 0 1px 0 var(--hairline);
+  }
+  .pcard-grid {
+    border-top: 0;
+    padding-top: 6px;
+  }
+  .pcard-grid,
+  .pcard-history {
+    margin-top: -8px;
+  }
+}
 @media (max-height: 860px) {
   .insp-scroll {
     gap: 10px;
@@ -3023,13 +3048,42 @@ button.cam-preset:hover {
   .pcard-grid {
     gap: 6px 12px;
     padding-top: 8px;
+    margin-top: 0;
+  }
+  .pcard-history {
+    margin-top: 0;
   }
   .cam-field {
     height: 44px;
   }
 }
+/* Short screens: the import sheet gives its room to the table (every cell there is what will be saved). */
+@media (max-height: 820px) {
+  .import-preview .preview-list {
+    display: none;
+  }
+  .import-preview {
+    margin-top: 10px;
+    margin-bottom: 10px;
+    padding: 8px 14px;
+  }
+  .import-preview-head {
+    margin-bottom: 0;
+  }
+  .import-preview-head + p {
+    margin-top: 6px;
+  }
+  .map-table-wrap {
+    max-height: clamp(204px, calc(100vh - 430px), 460px);
+  }
+}
 @media (max-height: 740px) {
   .insp-scroll {
+    padding-top: 12px;
+  }
+  .pcard-top {
+    top: -12px;
+    margin-top: -12px;
     padding-top: 12px;
   }
   .eye-opt {

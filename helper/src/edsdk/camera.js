@@ -37,8 +37,10 @@ const CAPTURE_TIMEOUT_MS = 20_000;
 const MATCH_WINDOW_MS = 8000;
 // Later than that (a self-timer, a long exposure) it still does, for this long, but only while it is the
 // first thing the camera has produced since: once a photo from the camera's own button has come in
-// between, the order can no longer be trusted. This matches how long Lumen keeps a failed capture's labels.
-const LATE_MATCH_MS = 90_000;
+// between, the order can no longer be trusted. Kept short on purpose: the photo is filed with the
+// patient and eye selected at that earlier press, and half a minute on, a new photo is far more
+// likely to be a fresh press of the camera's own button for whoever is on screen now.
+const LATE_MATCH_MS = 30_000;
 // The two files of a RAW+JPEG shot arrive close together; after this long a RAW on its own means RAW only.
 const JPEG_AFTER_RAW_MS = 3000;
 // A new JPEG on the memory card that the camera has not offered to the computer by now is fetched from the card.
