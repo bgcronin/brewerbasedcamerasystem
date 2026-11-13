@@ -83,6 +83,7 @@ export const DataType = {
 
 export const Err = {
   OK: 0x00000000,
+  INTERNAL_ERROR: 0x00000002,
   NOT_SUPPORTED: 0x00000007,
   PROPERTIES_UNAVAILABLE: 0x00000050,
   INVALID_PARAMETER: 0x00000060,
@@ -109,6 +110,8 @@ export const Err = {
 };
 
 const MESSAGES = {
+  [Err.INTERNAL_ERROR]:
+    'The camera would not let Camera Link connect. Usually another program has it: quit EOS Utility (also its icon by the clock), close the Windows Photos or "Import pictures" window if one opened, then switch the camera off and on. If that does not help, the Canon SDK may be too new for this camera: try EDSDK 3.x.',
   [Err.DEVICE_BUSY]: 'The camera is busy. Try again in a moment.',
   [Err.PTP_DEVICE_BUSY]: 'The camera is busy. Try again in a moment.',
   [Err.COMM_PORT_IS_IN_USE]: 'Another program is using the camera. Quit EOS Utility (and any photo import app), then reconnect.',
